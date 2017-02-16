@@ -359,9 +359,10 @@ public:
 
         vr::HmdMatrix44_t mat = m_pHMD->GetProjectionMatrix( nEye, m_fNearClip, m_fFarClip );
 
+        // NOTE: Flip y for Vulkan
         return Matrix4(
             mat.m[0][0], mat.m[1][0], mat.m[2][0], mat.m[3][0],
-            mat.m[0][1], mat.m[1][1], mat.m[2][1], mat.m[3][1],
+            mat.m[0][1], -mat.m[1][1], mat.m[2][1], mat.m[3][1],
             mat.m[0][2], mat.m[1][2], mat.m[2][2], mat.m[3][2],
             mat.m[0][3], mat.m[1][3], mat.m[2][3], mat.m[3][3]
         );
@@ -790,8 +791,8 @@ struct Demo {
         vr::VRTextureBounds_t textureBounds;
         textureBounds.uMin = 0.0f;
         textureBounds.uMax = 1.0f;
-        textureBounds.vMin = 1.0f;
-        textureBounds.vMax = 0.0f;
+        textureBounds.vMin = 0.0f;
+        textureBounds.vMax = 1.0f;
 
         vr::VRVulkanTextureData_t vulkanData;
         vulkanData.m_nImage = ( uint64_t ) ( VkImage )m_eyeRenderTarget.image;
@@ -889,8 +890,12 @@ struct Demo {
         auto result = commandBuffer.begin(&commandInfo);
         VERIFY(result == vk::Result::eSuccess);
 
+        // Transition swapchain image to TRANFSER_DST_OPTIMAL for companion window
+        set_image_layout( commandBuffer, buffers[ current_buffer ].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePresentSrcKHR, vk::ImageLayout::eTransferDstOptimal,
+                vk::AccessFlagBits::eColorAttachmentRead, vk::PipelineStageFlagBits::eBottomOfPipe, vk::PipelineStageFlagBits::eTopOfPipe );
+
         // Transition from TRANSFER_SRC_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL
-        set_image_layout(m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferSrcOptimal,
+        set_image_layout( commandBuffer, m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferSrcOptimal,
                          vk::ImageLayout::eColorAttachmentOptimal, vk::AccessFlagBits::eTransferRead,
                          vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput);
 
@@ -907,11 +912,28 @@ struct Demo {
         commandBuffer.draw(12 * 3, 1000, 0, 0 );
         commandBuffer.endRenderPass();
 
-        // Transition from TRANSFER_SRC_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL for the OpenVR Submit
-        set_image_layout(m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eColorAttachmentOptimal,
-                         vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eColorAttachmentWrite,
-                         vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eTransfer);
+        // Copy to the companion window (swapchain image)
+        auto const subresource = vk::ImageSubresourceLayers()
+                                             .setAspectMask(vk::ImageAspectFlagBits::eColor)
+                                             .setMipLevel(0)
+                                             .setBaseArrayLayer(0)
+                                             .setLayerCount(1);
+        auto const blitRegion =
+            vk::ImageBlit()
+                .setSrcSubresource( subresource )
+                .setSrcOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height, 1 ) } )
+                .setDstSubresource(subresource)
+                .setDstOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( width, height, 1 ) } );
+        commandBuffer.blitImage( m_eyeRenderTarget.image, vk::ImageLayout::eTransferSrcOptimal, buffers[ current_buffer ].image, vk::ImageLayout::eTransferDstOptimal, { blitRegion }, vk::Filter::eNearest );
 
+         // Transition swapchain image to PRESENT_SRC_KHR for companion window
+        set_image_layout( commandBuffer, buffers[ current_buffer ].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR,
+                vk::AccessFlagBits::eTransferWrite, vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTopOfPipe );
+
+        // Transition from COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL  for the OpenVR Submit
+        set_image_layout( commandBuffer,m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eColorAttachmentOptimal,
+                         vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eColorAttachmentWrite,
+                         vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eTransfer );
 
         if (separate_present_queue) {
             // We have to transfer ownership from the graphics queue family to
@@ -1111,12 +1133,10 @@ struct Demo {
         //-----------------------------------------------------------------------------------------
         // OpenVR END
         //-----------------------------------------------------------------------------------------
-        char const *const instance_validation_layers_alt1[] = {"VK_LAYER_LUNARG_standard_validation"};
-
-        char const *const instance_validation_layers_alt2[] = {
+        // OpenVR: no unique_objects when using SteamVR
+        char const *const instance_validation_layers_alt1[] = {
             "VK_LAYER_GOOGLE_threading",     "VK_LAYER_LUNARG_parameter_validation", "VK_LAYER_LUNARG_object_tracker",
-            "VK_LAYER_LUNARG_image",         "VK_LAYER_LUNARG_core_validation",      "VK_LAYER_LUNARG_swapchain",
-            "VK_LAYER_GOOGLE_unique_objects"};
+            "VK_LAYER_LUNARG_image",         "VK_LAYER_LUNARG_core_validation",      "VK_LAYER_LUNARG_swapchain" };
 
         // Look for validation layers
         vk::Bool32 validation_found = VK_FALSE;
@@ -1136,16 +1156,6 @@ struct Demo {
                     enabled_layer_count = ARRAY_SIZE(instance_validation_layers_alt1);
                     enabled_layers[0] = "VK_LAYER_LUNARG_standard_validation";
                     validation_layer_count = 1;
-                } else {
-                    // use alternative set of validation layers
-                    instance_validation_layers = instance_validation_layers_alt2;
-                    enabled_layer_count = ARRAY_SIZE(instance_validation_layers_alt2);
-                    validation_found = check_layers(ARRAY_SIZE(instance_validation_layers_alt2), instance_validation_layers,
-                                                    instance_layer_count, instance_layers.get());
-                    validation_layer_count = ARRAY_SIZE(instance_validation_layers_alt2);
-                    for (uint32_t i = 0; i < validation_layer_count; i++) {
-                        enabled_layers[i] = instance_validation_layers[i];
-                    }
                 }
             }
 
@@ -1495,13 +1505,29 @@ struct Demo {
         // If the format list includes just one entry of VK_FORMAT_UNDEFINED,
         // the surface has no preferred format.  Otherwise, at least one
         // supported format will be returned.
+        uint32_t nFormatIndex = 0;
         if (formatCount == 1 && surfFormats[0].format == vk::Format::eUndefined) {
             format = vk::Format::eB8G8R8A8Unorm;
         } else {
             assert(formatCount >= 1);
-            format = surfFormats[0].format;
+            // Favor sRGB if it's available
+            for( ; nFormatIndex < formatCount; nFormatIndex++ )
+            {
+                if ( surfFormats[nFormatIndex].format == vk::Format::eB8G8R8A8Srgb || 
+                     surfFormats[nFormatIndex].format == vk::Format::eR8G8B8A8Srgb )
+                {
+                    break;
+                }
+            }
+            if ( nFormatIndex == formatCount )
+            {
+                // Default to the first one if no sRGB
+                nFormatIndex = 0;
+            }
+            
+            format = surfFormats[nFormatIndex].format;
         }
-        color_space = surfFormats[0].colorSpace;
+        color_space = surfFormats[nFormatIndex].colorSpace;
 
         quit = false;
         curFrame = 0;
@@ -1546,7 +1572,7 @@ struct Demo {
                                            .setArrayLayers(1)
                                            .setSamples(vk::SampleCountFlagBits::e1)
                                            .setTiling(vk::ImageTiling::eOptimal)
-                                           .setUsage(vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled)
+                                           .setUsage(vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled)
                                            .setSharingMode(vk::SharingMode::eExclusive)
                                            .setQueueFamilyIndexCount(0)
                                            .setPQueueFamilyIndices(nullptr)
@@ -1572,9 +1598,9 @@ struct Demo {
 
         m_eyeRenderTarget.imageLayout = vk::ImageLayout::eTransferSrcOptimal;
 
-        set_image_layout(m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eUndefined,
+        set_image_layout( cmd, m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eUndefined,
                          vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eTransferWrite,
-                         vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eAllGraphics);
+                         vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eAllGraphics );
 
         auto const color_image_view =
             vk::ImageViewCreateInfo()
@@ -1773,7 +1799,7 @@ struct Demo {
                                       .setImageColorSpace(color_space)
                                       .setImageExtent({swapchainExtent.width, swapchainExtent.height})
                                       .setImageArrayLayers(1)
-                                      .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment)
+                                      .setImageUsage(vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst)
                                       .setImageSharingMode(vk::SharingMode::eExclusive)
                                       .setQueueFamilyIndexCount(0)
                                       .setPQueueFamilyIndices(nullptr)
@@ -1816,6 +1842,9 @@ struct Demo {
 
             result = device.createImageView(&color_image_view, nullptr, &buffers[i].view);
             VERIFY(result == vk::Result::eSuccess);
+
+            set_image_layout( cmd, swapchainImages[i], vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eUndefined, vk::ImageLayout::ePresentSrcKHR,
+                vk::AccessFlagBits::eColorAttachmentWrite, vk::PipelineStageFlagBits::eBottomOfPipe, vk::PipelineStageFlagBits::eTopOfPipe );
         }
     }
 
@@ -1920,7 +1949,7 @@ struct Demo {
         result = device.createImageView(&view, nullptr, &depth.view);
         VERIFY(result == vk::Result::eSuccess);
 
-        set_image_layout(depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eUndefined,
+        set_image_layout( cmd, depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eUndefined,
                          vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::PipelineStageFlagBits::eTopOfPipe,
                          vk::PipelineStageFlagBits::eTopOfPipe);
     }
@@ -2045,7 +2074,7 @@ struct Demo {
                                            .setRasterizerDiscardEnable(VK_FALSE)
                                            .setPolygonMode(vk::PolygonMode::eFill)
                                            .setCullMode(vk::CullModeFlagBits::eBack)
-                                           .setFrontFace(vk::FrontFace::eClockwise)
+                                           .setFrontFace(vk::FrontFace::eCounterClockwise)
                                            .setDepthBiasEnable(VK_FALSE)
                                            .setLineWidth(1.0f);
 
@@ -2230,7 +2259,7 @@ struct Demo {
                                       vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
                 // Nothing in the pipeline needs to be complete to start, and don't allow fragment
                 // shader to run until layout transition completes
-                set_image_layout(textures[i].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePreinitialized,
+                set_image_layout(cmd, textures[i].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePreinitialized,
                                  textures[i].imageLayout, vk::AccessFlagBits::eHostWrite, vk::PipelineStageFlagBits::eTopOfPipe,
                                  vk::PipelineStageFlagBits::eFragmentShader);
                 staging_texture.image = vk::Image();
@@ -2245,11 +2274,11 @@ struct Demo {
                                       vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
                                       vk::MemoryPropertyFlagBits::eDeviceLocal);
 
-                set_image_layout(staging_texture.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePreinitialized,
+                set_image_layout(cmd, staging_texture.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePreinitialized,
                                  vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eHostWrite,
                                  vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer);
 
-                set_image_layout(textures[i].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePreinitialized,
+                set_image_layout(cmd, textures[i].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::ePreinitialized,
                                  vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits::eHostWrite,
                                  vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eTransfer);
 
@@ -2270,7 +2299,7 @@ struct Demo {
                 cmd.copyImage(staging_texture.image, vk::ImageLayout::eTransferSrcOptimal, textures[i].image,
                               vk::ImageLayout::eTransferDstOptimal, 1, &copy_region);
 
-                set_image_layout(textures[i].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferDstOptimal,
+                set_image_layout(cmd, textures[i].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferDstOptimal,
                                  textures[i].imageLayout, vk::AccessFlagBits::eTransferWrite, vk::PipelineStageFlagBits::eTransfer,
                                  vk::PipelineStageFlagBits::eFragmentShader);
             } else {
@@ -2400,9 +2429,9 @@ struct Demo {
         prepare();
     }
 
-    void set_image_layout(vk::Image image, vk::ImageAspectFlags aspectMask, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
+    void set_image_layout(vk::CommandBuffer commandBuffer, vk::Image image, vk::ImageAspectFlags aspectMask, vk::ImageLayout oldLayout, vk::ImageLayout newLayout,
                           vk::AccessFlags srcAccessMask, vk::PipelineStageFlags src_stages, vk::PipelineStageFlags dest_stages) {
-        assert(cmd);
+        assert(commandBuffer);
 
         auto DstAccessMask = [](vk::ImageLayout const &layout) {
             vk::AccessFlags flags;
@@ -2446,7 +2475,7 @@ struct Demo {
                                  .setImage(image)
                                  .setSubresourceRange(vk::ImageSubresourceRange(aspectMask, 0, 1, 0, 1));
 
-        cmd.pipelineBarrier(src_stages, dest_stages, vk::DependencyFlagBits(), 0, nullptr, 0, nullptr, 1, &barrier);
+        commandBuffer.pipelineBarrier(src_stages, dest_stages, vk::DependencyFlagBits(), 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
     void update_data_buffer() {
