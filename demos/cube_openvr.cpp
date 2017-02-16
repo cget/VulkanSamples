@@ -1001,7 +1001,13 @@ struct Demo {
         vec3 origin = {0, 0, 0};
         vec3 up = {0.0f, 1.0f, 0.0};
 
+#ifdef _WIN32
+        // Immediate mode not support on NVIDIA Windows driver, use Mailbox instead
         presentMode = vk::PresentModeKHR::eMailbox;
+#else
+        // Immediate mode support on NVIDIA Linux driver
+        presentMode = vk::PresentModeKHR::eImmediate;
+#endif
         frameCount = UINT32_MAX;
         use_xlib = false;
 
