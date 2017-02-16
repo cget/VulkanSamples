@@ -2044,8 +2044,8 @@ struct Demo {
                                            .setDepthClampEnable(VK_FALSE)
                                            .setRasterizerDiscardEnable(VK_FALSE)
                                            .setPolygonMode(vk::PolygonMode::eFill)
-                                           .setCullMode(vk::CullModeFlagBits::eBack)
-                                           .setFrontFace(vk::FrontFace::eCounterClockwise)
+                                           .setCullMode(vk::CullModeFlagBits::eNone)
+                                           .setFrontFace(vk::FrontFace::eClockwise)
                                            .setDepthBiasEnable(VK_FALSE)
                                            .setLineWidth(1.0f);
 
@@ -2457,7 +2457,7 @@ struct Demo {
             VERIFY(data.result == vk::Result::eSuccess);
 
             // OpenVR get the eye projection matrix
-            memcpy( data.value, g_VRInterface.GetCurrentViewProjectionMatrix( ( vr::Hmd_Eye) nEye ).get(), sizeof( Matrix4 ) );
+            memcpy( data.value, g_VRInterface.GetCurrentViewProjectionMatrix( ( vr::Hmd_Eye) nEye ).get(), sizeof( float ) * 16 );
 
             device.unmapMemory(uniform_data[ nEye ].mem);
         }
