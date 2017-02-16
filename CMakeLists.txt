@@ -162,6 +162,8 @@ else()
     else()
         set (SPIRV_TOOLS_SEARCH_PATH "${EXTERNAL_SOURCE_ROOT}/spirv-tools/${BUILDTGT_DIR}/source" "${CMAKE_SOURCE_DIR}/../x86_64/lib/spirv-tools" )
     endif()
+
+    set (OPENVR_SEARCH_PATH "${EXTERNAL_SOURCE_ROOT}/openvr/lib/linux64" )
 endif()
 
 find_program(GLSLANG_VALIDATOR NAMES glslangValidator
@@ -179,6 +181,10 @@ find_path(SPIRV_TOOLS_INCLUDE_DIR spirv-tools/libspirv.h HINTS "${EXTERNAL_SOURC
                                                    "${CMAKE_SOURCE_DIR}/../SPIRV-Tools/include"
                                                    "${EXTERNAL_SOURCE_ROOT}/source/spirv-tools/external/include"
                                              DOC "Path to spirv-tools/libspirv.h")
+
+find_path(OPENVR_INCLUDE_DIR openvr.h HINTS "${EXTERNAL_SOURCE_ROOT}/openvr/headers"
+                                                "${CMAKE_SOURCE_DIR}/../openvr/headers"
+                                                DOC "Path to openvr.h")
 
 find_library(GLSLANG_LIB NAMES glslang
              HINTS ${GLSLANG_SEARCH_PATH} )
@@ -201,6 +207,8 @@ find_library(SPIRV_REMAPPER_LIB NAMES SPVRemapper
 find_library(SPIRV_TOOLS_LIB NAMES SPIRV-Tools
              HINTS ${SPIRV_TOOLS_SEARCH_PATH} )
 
+find_library(OPENVR_LIB NAMES openvr_api
+            HINTS ${OPENVR_SEARCH_PATH} )
 if (WIN32)
     add_library(glslang     STATIC IMPORTED)
     add_library(OGLCompiler STATIC IMPORTED)

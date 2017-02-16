@@ -22,6 +22,11 @@
 #include <X11/Xutil.h>
 #endif
 
+// OpenVR header
+#include <openvr.h>
+// OpenVR sample helpers
+#include "Matrices.h"
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -45,7 +50,7 @@
 #define VERIFY(x) ((void)(x))
 #endif
 
-#define APP_SHORT_NAME "cube"
+#define APP_SHORT_NAME "cube_openvr"
 #ifdef _WIN32
 #define APP_NAME_STR_LEN 80
 #endif
@@ -101,6 +106,309 @@ struct vktexcube_vs_uniform {
     float position[12 * 3][4];
     float attr[12 * 3][4];
 };
+
+//--------------------------------------------------------------------------------------
+// Class to interface with OpenVR
+//--------------------------------------------------------------------------------------
+class CVRInterface
+{
+public:
+
+    //--------------------------------------------------------------------------------------
+    // Initialize OpenVR
+    //--------------------------------------------------------------------------------------
+    bool BInit()
+    {
+        // Loading the SteamVR Runtime
+        vr::EVRInitError eError = vr::VRInitError_None;
+        m_pHMD = vr::VR_Init( &eError, vr::VRApplication_Scene );
+
+        if ( eError != vr::VRInitError_None )
+        {
+            m_pHMD = NULL;
+            fprintf( stderr, "Unable to init VR runtime: %s", vr::VR_GetVRInitErrorAsEnglishDescription( eError ) );
+            return false;
+        }
+
+        m_pRenderModels = (vr::IVRRenderModels *)vr::VR_GetGenericInterface( vr::IVRRenderModels_Version, &eError );
+        if( !m_pRenderModels )
+        {
+            m_pHMD = NULL;
+            vr::VR_Shutdown();
+            fprintf( stderr, "Unable to get render model interface: %s", vr::VR_GetVRInitErrorAsEnglishDescription( eError ) );
+            return false;
+        }
+
+        if ( !vr::VRCompositor() )
+        {
+            fprintf( stderr, "Compositor initialization failed. See log file for details\n" );
+            return false;
+        }
+
+        m_pHMD->GetRecommendedRenderTargetSize( &m_nRenderTargetWidth, &m_nRenderTargetHeight );
+
+        SetupCameras();
+        return true;
+    }
+
+    //--------------------------------------------------------------------------------------
+    // Ask OpenVR for the list of instance extensions required
+    //--------------------------------------------------------------------------------------
+    bool GetVulkanInstanceExtensionsRequired( std::vector< std::string > &outInstanceExtensionList )
+    {
+        if ( !vr::VRCompositor() )
+        {
+            return false;
+        }
+
+        outInstanceExtensionList.clear();
+        uint32_t nBufferSize = vr::VRCompositor()->GetVulkanInstanceExtensionsRequired( nullptr, 0 );
+        if ( nBufferSize > 0 )
+        {
+            // Allocate memory for the space separated list and query for it
+            char *pExtensionStr = new char[ nBufferSize ];
+            pExtensionStr[0] = 0;
+            vr::VRCompositor()->GetVulkanInstanceExtensionsRequired( pExtensionStr, nBufferSize );
+
+            // Break up the space separated list into entries on the CUtlStringList
+            std::string curExtStr;
+            uint32_t nIndex = 0;
+            while ( pExtensionStr[ nIndex ] != 0 && ( nIndex < nBufferSize ) )
+            {
+                if ( pExtensionStr[ nIndex ] == ' ' )
+                {
+                    outInstanceExtensionList.push_back( curExtStr );
+                    curExtStr.clear();
+                }
+                else
+                {
+                    curExtStr += pExtensionStr[ nIndex ];
+                }
+                nIndex++;
+            }
+            if ( curExtStr.size() > 0 )
+            {
+                outInstanceExtensionList.push_back( curExtStr );
+            }
+
+            delete [] pExtensionStr;
+        }
+
+        return true;
+    }
+
+    //--------------------------------------------------------------------------------------
+    // Ask OpenVR for the list of device extensions required
+    //--------------------------------------------------------------------------------------
+    bool GetVulkanDeviceExtensionsRequired( VkPhysicalDevice pPhysicalDevice, std::vector< std::string > &outDeviceExtensionList )
+    {
+        if ( !vr::VRCompositor() )
+        {
+            return false;
+        }
+
+        outDeviceExtensionList.clear();
+        uint32_t nBufferSize = vr::VRCompositor()->GetVulkanDeviceExtensionsRequired( ( VkPhysicalDevice_T * ) pPhysicalDevice, nullptr, 0 );
+        if ( nBufferSize > 0 )
+        {
+            // Allocate memory for the space separated list and query for it
+            char *pExtensionStr = new char[ nBufferSize ];
+            pExtensionStr[0] = 0;
+            vr::VRCompositor()->GetVulkanDeviceExtensionsRequired( ( VkPhysicalDevice_T * ) pPhysicalDevice, pExtensionStr, nBufferSize );
+
+            // Break up the space separated list into entries on the CUtlStringList
+            std::string curExtStr;
+            uint32_t nIndex = 0;
+            while ( pExtensionStr[ nIndex ] != 0 && ( nIndex < nBufferSize ) )
+            {
+                if ( pExtensionStr[ nIndex ] == ' ' )
+                {
+                    outDeviceExtensionList.push_back( curExtStr );
+                    curExtStr.clear();
+                }
+                else
+                {
+                    curExtStr += pExtensionStr[ nIndex ];
+                }
+                nIndex++;
+            }
+            if ( curExtStr.size() > 0 )
+            {
+                outDeviceExtensionList.push_back( curExtStr );
+            }
+
+            delete [] pExtensionStr;
+        }
+
+        return true;
+    }
+
+    //--------------------------------------------------------------------------------------
+    // Teardown OpenVR
+    //--------------------------------------------------------------------------------------
+    void Shutdown()
+    {
+        if( m_pHMD )
+        {
+            vr::VR_Shutdown();
+            m_pHMD = NULL;
+        }
+    }
+
+    //-----------------------------------------------------------------------------
+    // Purpose: Converts a SteamVR matrix to our local matrix class
+    //-----------------------------------------------------------------------------
+    Matrix4 ConvertSteamVRMatrixToMatrix4( const vr::HmdMatrix34_t &matPose )
+    {
+        Matrix4 matrixObj(
+            matPose.m[0][0], matPose.m[1][0], matPose.m[2][0], 0.0,
+            matPose.m[0][1], matPose.m[1][1], matPose.m[2][1], 0.0,
+            matPose.m[0][2], matPose.m[1][2], matPose.m[2][2], 0.0,
+            matPose.m[0][3], matPose.m[1][3], matPose.m[2][3], 1.0f
+            );
+        return matrixObj;
+    }
+
+    //-----------------------------------------------------------------------------
+    // Update poses
+    //-----------------------------------------------------------------------------
+    void UpdateHMDMatrixPose()
+    {
+        if ( !m_pHMD )
+            return;
+
+        vr::VRCompositor()->WaitGetPoses( m_rTrackedDevicePose, vr::k_unMaxTrackedDeviceCount, NULL, 0 );
+
+        m_iValidPoseCount = 0;
+        m_strPoseClasses = "";
+        for ( uint32_t nDevice = 0; nDevice < vr::k_unMaxTrackedDeviceCount; ++nDevice )
+        {
+            if ( m_rTrackedDevicePose[nDevice].bPoseIsValid )
+            {
+                m_iValidPoseCount++;
+                m_rmat4DevicePose[nDevice] = ConvertSteamVRMatrixToMatrix4( m_rTrackedDevicePose[nDevice].mDeviceToAbsoluteTracking );
+                if (m_rDevClassChar[nDevice]==0)
+                {
+                    switch (m_pHMD->GetTrackedDeviceClass(nDevice))
+                    {
+                    case vr::TrackedDeviceClass_Controller:        m_rDevClassChar[nDevice] = 'C'; break;
+                    case vr::TrackedDeviceClass_HMD:               m_rDevClassChar[nDevice] = 'H'; break;
+                    case vr::TrackedDeviceClass_Invalid:           m_rDevClassChar[nDevice] = 'I'; break;
+                    case vr::TrackedDeviceClass_GenericTracker:    m_rDevClassChar[nDevice] = 'G'; break;
+                    case vr::TrackedDeviceClass_TrackingReference: m_rDevClassChar[nDevice] = 'T'; break;
+                    default:                                       m_rDevClassChar[nDevice] = '?'; break;
+                    }
+                }
+                m_strPoseClasses += m_rDevClassChar[nDevice];
+            }
+        }
+
+        if ( m_rTrackedDevicePose[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid )
+        {
+            m_mat4HMDPose = m_rmat4DevicePose[vr::k_unTrackedDeviceIndex_Hmd];
+            m_mat4HMDPose.invert();
+        }
+    }
+
+    //-----------------------------------------------------------------------------
+    // Purpose: Gets an HMDMatrixPoseEye with respect to nEye.
+    //-----------------------------------------------------------------------------
+    Matrix4 GetHMDMatrixPoseEye( vr::Hmd_Eye nEye )
+    {
+        if ( !m_pHMD )
+            return Matrix4();
+
+        vr::HmdMatrix34_t matEyeRight = m_pHMD->GetEyeToHeadTransform( nEye );
+        Matrix4 matrixObj(
+            matEyeRight.m[0][0], matEyeRight.m[1][0], matEyeRight.m[2][0], 0.0,
+            matEyeRight.m[0][1], matEyeRight.m[1][1], matEyeRight.m[2][1], 0.0,
+            matEyeRight.m[0][2], matEyeRight.m[1][2], matEyeRight.m[2][2], 0.0,
+            matEyeRight.m[0][3], matEyeRight.m[1][3], matEyeRight.m[2][3], 1.0f
+            );
+
+        return matrixObj.invert();
+    }
+
+
+    //-----------------------------------------------------------------------------
+    // Purpose: Gets a Current View Projection Matrix with respect to nEye,
+    //          which may be an Eye_Left or an Eye_Right.
+    //-----------------------------------------------------------------------------
+    Matrix4 GetCurrentViewProjectionMatrix( vr::Hmd_Eye nEye )
+    {
+        Matrix4 matMVP;
+        if( nEye == vr::Eye_Left )
+        {
+            matMVP = m_mat4ProjectionLeft * m_mat4eyePosLeft * m_mat4HMDPose;
+        }
+        else if( nEye == vr::Eye_Right )
+        {
+            matMVP = m_mat4ProjectionRight * m_mat4eyePosRight *  m_mat4HMDPose;
+        }
+
+        return matMVP;
+    }
+
+    //-----------------------------------------------------------------------------
+    // Purpose: Gets a Matrix Projection Eye with respect to nEye.
+    //-----------------------------------------------------------------------------
+    Matrix4 GetHMDMatrixProjectionEye( vr::Hmd_Eye nEye )
+    {
+        if ( !m_pHMD )
+            return Matrix4();
+
+        vr::HmdMatrix44_t mat = m_pHMD->GetProjectionMatrix( nEye, m_fNearClip, m_fFarClip );
+
+        return Matrix4(
+            mat.m[0][0], mat.m[1][0], mat.m[2][0], mat.m[3][0],
+            mat.m[0][1], mat.m[1][1], mat.m[2][1], mat.m[3][1],
+            mat.m[0][2], mat.m[1][2], mat.m[2][2], mat.m[3][2],
+            mat.m[0][3], mat.m[1][3], mat.m[2][3], mat.m[3][3]
+        );
+    }
+
+    //-----------------------------------------------------------------------------
+    // Purpose:
+    //-----------------------------------------------------------------------------
+    void SetupCameras()
+    {
+        m_mat4ProjectionLeft = GetHMDMatrixProjectionEye( vr::Eye_Left );
+        m_mat4ProjectionRight = GetHMDMatrixProjectionEye( vr::Eye_Right );
+        m_mat4eyePosLeft = GetHMDMatrixPoseEye( vr::Eye_Left );
+        m_mat4eyePosRight = GetHMDMatrixPoseEye( vr::Eye_Right );
+    }
+
+    uint32_t GetRenderWidth() const { return m_nRenderTargetWidth; }
+    uint32_t GetRenderHeight() const { return m_nRenderTargetHeight; }
+
+private:
+    vr::IVRSystem *m_pHMD = nullptr;
+    vr::IVRRenderModels *m_pRenderModels;
+    vr::TrackedDevicePose_t m_rTrackedDevicePose[ vr::k_unMaxTrackedDeviceCount ];
+    Matrix4 m_rmat4DevicePose[ vr::k_unMaxTrackedDeviceCount ];
+    bool m_rbShowTrackedDevice[ vr::k_unMaxTrackedDeviceCount ];
+    std::string m_strPoseClasses;                            // what classes we saw poses for this frame
+    char m_rDevClassChar[ vr::k_unMaxTrackedDeviceCount ];   // for each device, a character representing its class
+
+    int m_iValidPoseCount = 0;
+
+    Matrix4 m_mat4HMDPose;
+    Matrix4 m_mat4eyePosLeft;
+    Matrix4 m_mat4eyePosRight;
+
+    Matrix4 m_mat4ProjectionCenter;
+    Matrix4 m_mat4ProjectionLeft;
+    Matrix4 m_mat4ProjectionRight;
+
+    float m_fNearClip = 0.1f;
+    float m_fFarClip = 30.0f;
+
+    uint32_t m_nRenderTargetWidth = 0;
+    uint32_t m_nRenderTargetHeight = 0;
+
+};
+
+CVRInterface g_VRInterface;
 
 //--------------------------------------------------------------------------------------
 // Mesh and VertexFormat Data
@@ -197,7 +505,7 @@ static const float g_uv_buffer_data[] = {
 
 typedef struct {
     vk::Image image;
-    vk::CommandBuffer cmd;
+    vk::CommandBuffer cmd[2]; // OpenVR: one for each eye
     vk::CommandBuffer graphics_to_present_cmd;
     vk::ImageView view;
 } SwapchainBuffers;
@@ -340,9 +648,7 @@ struct Demo {
             }
         }
 
-        for (uint32_t i = 0; i < swapchainImageCount; i++) {
-            device.destroyFramebuffer(framebuffers[i], nullptr);
-        }
+        device.destroyFramebuffer(framebuffer, nullptr);
         device.destroyDescriptorPool(desc_pool, nullptr);
 
         device.destroyPipeline(pipeline, nullptr);
@@ -363,12 +669,16 @@ struct Demo {
         device.destroyImage(depth.image, nullptr);
         device.freeMemory(depth.mem, nullptr);
 
-        device.destroyBuffer(uniform_data.buf, nullptr);
-        device.freeMemory(uniform_data.mem, nullptr);
+        for ( int i = 0; i < 2; i++ )
+        {
+            device.destroyBuffer(uniform_data[ i ].buf, nullptr);
+            device.freeMemory(uniform_data[ i ].mem, nullptr);
+        }
 
         for (uint32_t i = 0; i < swapchainImageCount; i++) {
             device.destroyImageView(buffers[i].view, nullptr);
-            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd);
+            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[vr::Eye_Left]);
+            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[vr::Eye_Right]);
         }
 
         device.destroyCommandPool(cmd_pool, nullptr);
@@ -462,17 +772,60 @@ struct Demo {
         // engine has fully released ownership to the application, and it is
         // okay to render to the image.
         vk::PipelineStageFlags const pipe_stage_flags = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-        auto const submit_info = vk::SubmitInfo()
+        auto submit_info = vk::SubmitInfo()
                                      .setPWaitDstStageMask(&pipe_stage_flags)
                                      .setWaitSemaphoreCount(1)
                                      .setPWaitSemaphores(&image_acquired_semaphores[frame_index])
                                      .setCommandBufferCount(1)
-                                     .setPCommandBuffers(&buffers[current_buffer].cmd)
-                                     .setSignalSemaphoreCount(1)
-                                     .setPSignalSemaphores(&draw_complete_semaphores[frame_index]);
+                                     .setPCommandBuffers(&buffers[current_buffer].cmd[ vr::Eye_Left ])
+                                     .setSignalSemaphoreCount(0)
+                                     .setPSignalSemaphores(nullptr);
 
         result = graphics_queue.submit(1, &submit_info, vk::Fence());
         VERIFY(result == vk::Result::eSuccess);
+
+        //-----------------------------------------------------------------------------------------
+        // OpenVR BEGIN: Submit eyes to compositor, left eye just rendered
+        //-----------------------------------------------------------------------------------------
+        vr::VRTextureBounds_t textureBounds;
+        textureBounds.uMin = 0.0f;
+        textureBounds.uMax = 1.0f;
+        textureBounds.vMin = 1.0f;
+        textureBounds.vMax = 0.0f;
+
+        vr::VRVulkanTextureData_t vulkanData;
+        vulkanData.m_nImage = ( uint64_t ) ( VkImage )m_eyeRenderTarget.image;
+        vulkanData.m_pDevice = device;
+        vulkanData.m_pPhysicalDevice = gpu;
+        vulkanData.m_pInstance = inst;
+        vulkanData.m_pQueue = graphics_queue;
+        vulkanData.m_nQueueFamilyIndex = graphics_queue_family_index;
+
+        vulkanData.m_nWidth = m_eyeRenderTarget.tex_width;
+        vulkanData.m_nHeight = m_eyeRenderTarget.tex_height;
+        vulkanData.m_nFormat = ( uint32_t ) vk::Format::eR8G8B8A8Srgb;
+        vulkanData.m_nSampleCount = 1;
+
+        vr::Texture_t texture = { &vulkanData, vr::TextureType_Vulkan, vr::ColorSpace_Auto };
+        vr::VRCompositor()->Submit( vr::Eye_Left, &texture, &textureBounds );
+
+        // Submit right eye
+        submit_info = vk::SubmitInfo()
+                .setPWaitDstStageMask(&pipe_stage_flags)
+                .setWaitSemaphoreCount(0)
+                .setPWaitSemaphores(nullptr)
+                .setCommandBufferCount(1)
+                .setPCommandBuffers(&buffers[current_buffer].cmd[ vr::Eye_Right ])
+                .setSignalSemaphoreCount(1)
+                .setPSignalSemaphores(&draw_complete_semaphores[frame_index]);
+        result = graphics_queue.submit(1, &submit_info, vk::Fence());
+        VERIFY(result == vk::Result::eSuccess);
+        vr::VRCompositor()->Submit( vr::Eye_Right, &texture, &textureBounds );
+
+        //-----------------------------------------------------------------------------------------
+        // OpenVR END
+        //-----------------------------------------------------------------------------------------
+
 
         if (separate_present_queue) {
             // If we are using separate queues, change image ownership to the
@@ -515,9 +868,12 @@ struct Demo {
         } else {
             VERIFY(result == vk::Result::eSuccess);
         }
+
+        // OpenVR: update pose data
+        g_VRInterface.UpdateHMDMatrixPose();
     }
 
-    void draw_build_cmd(vk::CommandBuffer commandBuffer) {
+    void draw_build_cmd(vk::CommandBuffer commandBuffer, vr::Hmd_Eye nEye ) {
         auto const commandInfo = vk::CommandBufferBeginInfo().setFlags(vk::CommandBufferUsageFlagBits::eSimultaneousUse);
 
         vk::ClearValue const clearValues[2] = {vk::ClearColorValue(std::array<float, 4>({{0.2f, 0.2f, 0.2f, 0.2f}})),
@@ -525,28 +881,37 @@ struct Demo {
 
         auto const passInfo = vk::RenderPassBeginInfo()
                                   .setRenderPass(render_pass)
-                                  .setFramebuffer(framebuffers[current_buffer])
-                                  .setRenderArea(vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D((uint32_t)width, (uint32_t)height)))
+                                  .setFramebuffer(framebuffer)
+                                  .setRenderArea(vk::Rect2D(vk::Offset2D(0, 0), vk::Extent2D((uint32_t)m_eyeRenderTarget.tex_width, (uint32_t)m_eyeRenderTarget.tex_height)))
                                   .setClearValueCount(2)
                                   .setPClearValues(clearValues);
 
         auto result = commandBuffer.begin(&commandInfo);
         VERIFY(result == vk::Result::eSuccess);
 
+        // Transition from TRANSFER_SRC_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL
+        set_image_layout(m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferSrcOptimal,
+                         vk::ImageLayout::eColorAttachmentOptimal, vk::AccessFlagBits::eTransferRead,
+                         vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eColorAttachmentOutput);
+
         commandBuffer.beginRenderPass(&passInfo, vk::SubpassContents::eInline);
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, 1, &desc_set, 0, nullptr);
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, 1, &desc_set[ nEye ], 0, nullptr);
 
         auto const viewport =
-            vk::Viewport().setWidth((float)width).setHeight((float)height).setMinDepth((float)0.0f).setMaxDepth((float)1.0f);
+            vk::Viewport().setWidth((float)m_eyeRenderTarget.tex_width).setHeight((float)m_eyeRenderTarget.tex_height).setMinDepth((float)0.0f).setMaxDepth((float)1.0f);
         commandBuffer.setViewport(0, 1, &viewport);
 
-        vk::Rect2D const scissor(vk::Offset2D(0, 0), vk::Extent2D(width, height));
+        vk::Rect2D const scissor(vk::Offset2D(0, 0), vk::Extent2D(m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height));
         commandBuffer.setScissor(0, 1, &scissor);
         commandBuffer.draw(12 * 3, 1, 0, 0);
-        // Note that ending the renderpass changes the image's layout from
-        // COLOR_ATTACHMENT_OPTIMAL to PRESENT_SRC_KHR
         commandBuffer.endRenderPass();
+
+        // Transition from TRANSFER_SRC_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL for the OpenVR Submit
+        set_image_layout(m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eColorAttachmentOptimal,
+                         vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eColorAttachmentWrite,
+                         vk::PipelineStageFlagBits::eColorAttachmentOutput, vk::PipelineStageFlagBits::eTransfer);
+
 
         if (separate_present_queue) {
             // We have to transfer ownership from the graphics queue family to
@@ -614,7 +979,7 @@ struct Demo {
         vec3 origin = {0, 0, 0};
         vec3 up = {0.0f, 1.0f, 0.0};
 
-        presentMode = vk::PresentModeKHR::eFifo;
+        presentMode = vk::PresentModeKHR::eImmediate;
         frameCount = UINT32_MAX;
         use_xlib = false;
 
@@ -729,6 +1094,23 @@ struct Demo {
         enabled_extension_count = 0;
         enabled_layer_count = 0;
 
+        //-----------------------------------------------------------------------------------------
+        // OpenVR BEGIN: Initialize OpenVR and get instance extensions that we need to enable
+        //-----------------------------------------------------------------------------------------
+        if ( !g_VRInterface.BInit() )
+        {
+            ERR_EXIT( "Could not initialize OpenVR.", "OpenVR initialization failure." );
+        }
+
+        std::vector< std::string > openvrInstanceExtensions;
+        if ( !g_VRInterface.GetVulkanInstanceExtensionsRequired( openvrInstanceExtensions ) )
+        {
+            ERR_EXIT( "Could not determine OpenVR Vulkan instance extensions.", "OpenVR initialization failure." );
+        }
+
+        //-----------------------------------------------------------------------------------------
+        // OpenVR END
+        //-----------------------------------------------------------------------------------------
         char const *const instance_validation_layers_alt1[] = {"VK_LAYER_LUNARG_standard_validation"};
 
         char const *const instance_validation_layers_alt2[] = {
@@ -821,6 +1203,17 @@ struct Demo {
             }
         }
 
+        //-----------------------------------------------------------------------------------------
+        // OpenVR BEGIN: Add OpenVR instance extensions
+        //-----------------------------------------------------------------------------------------
+        for ( size_t nExt = 0; nExt < openvrInstanceExtensions.size(); nExt++ )
+        {
+            extension_names[enabled_extension_count++] = openvrInstanceExtensions[ nExt ].c_str();
+        }
+        //-----------------------------------------------------------------------------------------
+        // OpenVR END
+        //-----------------------------------------------------------------------------------------
+
         if (!surfaceExtFound) {
             ERR_EXIT(
                 "vkEnumerateInstanceExtensionProperties failed to find "
@@ -883,6 +1276,7 @@ struct Demo {
                              .setPEngineName(APP_SHORT_NAME)
                              .setEngineVersion(0)
                              .setApiVersion(VK_API_VERSION_1_0);
+
         auto const inst_info = vk::InstanceCreateInfo()
                                    .setPApplicationInfo(&app)
                                    .setEnabledLayerCount(enabled_layer_count)
@@ -970,6 +1364,24 @@ struct Demo {
                 "information.\n",
                 "vkCreateInstance Failure");
         }
+
+        //-----------------------------------------------------------------------------------------
+        // OpenVR BEGIN: Query for OpenVR device extensions and add to the list
+        //-----------------------------------------------------------------------------------------
+        std::vector< std::string > openvrDeviceExtensions;
+        if ( !g_VRInterface.GetVulkanDeviceExtensionsRequired( gpu, openvrDeviceExtensions ) )
+        {
+            ERR_EXIT( "Could not determine OpenVR Vulkan device extensions.", "OpenVR initialization failure." );
+        }
+        for ( size_t nExt = 0; nExt < openvrDeviceExtensions.size(); nExt++ )
+        {
+            char *pExtString = new char[ openvrDeviceExtensions[ nExt ].length() + 1 ];
+            strcpy( pExtString, openvrDeviceExtensions[ nExt ].c_str() );
+            extension_names[enabled_extension_count++] = pExtString;
+        }
+        //-----------------------------------------------------------------------------------------
+        // OpenVR END
+        //-----------------------------------------------------------------------------------------s
 
         gpu.getProperties(&gpu_props);
 
@@ -1120,6 +1532,62 @@ struct Demo {
         gpu.getMemoryProperties(&memory_properties);
     }
 
+    // OpenVR: create/prepare the images needed for each eye
+    void prepare_openvr()
+    {
+        m_eyeRenderTarget.tex_width = g_VRInterface.GetRenderWidth();
+        m_eyeRenderTarget.tex_height = g_VRInterface.GetRenderHeight();
+
+        auto const image_create_info = vk::ImageCreateInfo()
+                                           .setImageType(vk::ImageType::e2D)
+                                           .setFormat(vk::Format::eR8G8B8A8Srgb)
+                                           .setExtent({(uint32_t)m_eyeRenderTarget.tex_width, (uint32_t)m_eyeRenderTarget.tex_height, 1})
+                                           .setMipLevels(1)
+                                           .setArrayLayers(1)
+                                           .setSamples(vk::SampleCountFlagBits::e1)
+                                           .setTiling(vk::ImageTiling::eOptimal)
+                                           .setUsage(vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled)
+                                           .setSharingMode(vk::SharingMode::eExclusive)
+                                           .setQueueFamilyIndexCount(0)
+                                           .setPQueueFamilyIndices(nullptr)
+                                           .setInitialLayout(vk::ImageLayout::eUndefined);
+
+        auto result = device.createImage(&image_create_info, nullptr, &m_eyeRenderTarget.image);
+        VERIFY(result == vk::Result::eSuccess);
+
+        vk::MemoryRequirements mem_reqs;
+        device.getImageMemoryRequirements( m_eyeRenderTarget.image, &mem_reqs);
+
+        m_eyeRenderTarget.mem_alloc.setAllocationSize(mem_reqs.size);
+        m_eyeRenderTarget.mem_alloc.setMemoryTypeIndex(0);
+
+        auto pass = memory_type_from_properties(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal, &m_eyeRenderTarget.mem_alloc.memoryTypeIndex);
+        VERIFY(pass == true);
+
+        result = device.allocateMemory(&m_eyeRenderTarget.mem_alloc, nullptr, &(m_eyeRenderTarget.mem));
+        VERIFY(result == vk::Result::eSuccess);
+
+        result = device.bindImageMemory(m_eyeRenderTarget.image, m_eyeRenderTarget.mem, 0);
+        VERIFY(result == vk::Result::eSuccess);
+
+        m_eyeRenderTarget.imageLayout = vk::ImageLayout::eTransferSrcOptimal;
+
+        set_image_layout(m_eyeRenderTarget.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eUndefined,
+                         vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits::eTransferWrite,
+                         vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eAllGraphics);
+
+        auto const color_image_view =
+            vk::ImageViewCreateInfo()
+                .setImage(m_eyeRenderTarget.image)
+                .setViewType(vk::ImageViewType::e2D)
+                .setFormat(vk::Format::eR8G8B8A8Srgb)
+                .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
+
+        result = device.createImageView(&color_image_view, nullptr, &m_eyeRenderTarget.view);
+        VERIFY(result == vk::Result::eSuccess);
+
+    }
+
     void prepare() {
         auto const cmd_pool_info = vk::CommandPoolCreateInfo().setQueueFamilyIndex(graphics_queue_family_index);
         auto result = device.createCommandPool(&cmd_pool_info, nullptr, &cmd_pool);
@@ -1138,6 +1606,9 @@ struct Demo {
         result = this->cmd.begin(&cmd_buf_info);
         VERIFY(result == vk::Result::eSuccess);
 
+        // OpenVR
+        prepare_openvr();
+
         prepare_buffers();
         prepare_depth();
         prepare_textures();
@@ -1148,7 +1619,8 @@ struct Demo {
         prepare_pipeline();
 
         for (uint32_t i = 0; i < swapchainImageCount; ++i) {
-            result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd);
+            result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd[ vr::Eye_Left ]);
+            result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd[ vr::Eye_Right ]);
             VERIFY(result == vk::Result::eSuccess);
         }
 
@@ -1178,7 +1650,8 @@ struct Demo {
 
         for (uint32_t i = 0; i < swapchainImageCount; ++i) {
             current_buffer = i;
-            draw_build_cmd(buffers[i].cmd);
+            draw_build_cmd(buffers[i].cmd[vr::Eye_Left], vr::Eye_Left);
+            draw_build_cmd(buffers[i].cmd[vr::Eye_Right], vr::Eye_Right);
         }
 
         /*
@@ -1368,36 +1841,39 @@ struct Demo {
         }
 
         auto const buf_info = vk::BufferCreateInfo().setSize(sizeof(data)).setUsage(vk::BufferUsageFlagBits::eUniformBuffer);
-        auto result = device.createBuffer(&buf_info, nullptr, &uniform_data.buf);
-        VERIFY(result == vk::Result::eSuccess);
+        for ( int i = 0; i < 2; i++ )
+        {
+            auto result = device.createBuffer(&buf_info, nullptr, &uniform_data[i].buf);
+            VERIFY(result == vk::Result::eSuccess);
 
-        vk::MemoryRequirements mem_reqs;
-        device.getBufferMemoryRequirements(uniform_data.buf, &mem_reqs);
+            vk::MemoryRequirements mem_reqs;
+            device.getBufferMemoryRequirements(uniform_data[i].buf, &mem_reqs);
 
-        uniform_data.mem_alloc.setAllocationSize(mem_reqs.size);
-        uniform_data.mem_alloc.setMemoryTypeIndex(0);
+            uniform_data[i].mem_alloc.setAllocationSize(mem_reqs.size);
+            uniform_data[i].mem_alloc.setMemoryTypeIndex(0);
 
-        bool const pass = memory_type_from_properties(
+             bool const pass = memory_type_from_properties(
             mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-            &uniform_data.mem_alloc.memoryTypeIndex);
-        VERIFY(pass);
+                &uniform_data[i].mem_alloc.memoryTypeIndex);
+            VERIFY(pass);
 
-        result = device.allocateMemory(&uniform_data.mem_alloc, nullptr, &(uniform_data.mem));
-        VERIFY(result == vk::Result::eSuccess);
+            result = device.allocateMemory(&uniform_data[i].mem_alloc, nullptr, &(uniform_data[i].mem));
+            VERIFY(result == vk::Result::eSuccess);
 
-        auto pData = device.mapMemory(uniform_data.mem, 0, uniform_data.mem_alloc.allocationSize, vk::MemoryMapFlags());
-        VERIFY(pData.result == vk::Result::eSuccess);
+            auto pData = device.mapMemory(uniform_data[i].mem, 0, uniform_data[i].mem_alloc.allocationSize, vk::MemoryMapFlags());
+            VERIFY(pData.result == vk::Result::eSuccess);
 
-        memcpy(pData.value, &data, sizeof data);
+            memcpy(pData.value, &data, sizeof data);
 
-        device.unmapMemory(uniform_data.mem);
+            device.unmapMemory(uniform_data[i].mem);
 
-        result = device.bindBufferMemory(uniform_data.buf, uniform_data.mem, 0);
-        VERIFY(result == vk::Result::eSuccess);
+            result = device.bindBufferMemory(uniform_data[i].buf, uniform_data[i].mem, 0);
+            VERIFY(result == vk::Result::eSuccess);
 
-        uniform_data.buffer_info.buffer = uniform_data.buf;
-        uniform_data.buffer_info.offset = 0;
-        uniform_data.buffer_info.range = sizeof(data);
+            uniform_data[i].buffer_info.buffer = uniform_data[i].buf;
+            uniform_data[i].buffer_info.offset = 0;
+            uniform_data[i].buffer_info.range = sizeof(data);
+        }
     }
 
     void prepare_depth() {
@@ -1406,7 +1882,7 @@ struct Demo {
         auto const image = vk::ImageCreateInfo()
                                .setImageType(vk::ImageType::e2D)
                                .setFormat(depth.format)
-                               .setExtent({(uint32_t)width, (uint32_t)height, 1})
+                               .setExtent({(uint32_t)g_VRInterface.GetRenderWidth(), (uint32_t)g_VRInterface.GetRenderHeight(), 1})
                                .setMipLevels(1)
                                .setArrayLayers(1)
                                .setSamples(vk::SampleCountFlagBits::e1)
@@ -1443,6 +1919,10 @@ struct Demo {
                               .setSubresourceRange(vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1));
         result = device.createImageView(&view, nullptr, &depth.view);
         VERIFY(result == vk::Result::eSuccess);
+
+        set_image_layout(depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eUndefined,
+                         vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::AccessFlagBits::eDepthStencilAttachmentWrite, vk::PipelineStageFlagBits::eTopOfPipe,
+                         vk::PipelineStageFlagBits::eTopOfPipe);
     }
 
     void prepare_descriptor_layout() {
@@ -1472,63 +1952,62 @@ struct Demo {
 
     void prepare_descriptor_pool() {
         vk::DescriptorPoolSize const poolSizes[2] = {
-            vk::DescriptorPoolSize().setType(vk::DescriptorType::eUniformBuffer).setDescriptorCount(1),
-            vk::DescriptorPoolSize().setType(vk::DescriptorType::eCombinedImageSampler).setDescriptorCount(texture_count)};
+            vk::DescriptorPoolSize().setType(vk::DescriptorType::eUniformBuffer).setDescriptorCount(2),
+            vk::DescriptorPoolSize().setType(vk::DescriptorType::eCombinedImageSampler).setDescriptorCount(texture_count*2)};
 
-        auto const descriptor_pool = vk::DescriptorPoolCreateInfo().setMaxSets(1).setPoolSizeCount(2).setPPoolSizes(poolSizes);
+        auto const descriptor_pool = vk::DescriptorPoolCreateInfo().setMaxSets(2).setPoolSizeCount(2).setPPoolSizes(poolSizes);
 
         auto result = device.createDescriptorPool(&descriptor_pool, nullptr, &desc_pool);
         VERIFY(result == vk::Result::eSuccess);
     }
 
     void prepare_descriptor_set() {
-        auto const alloc_info =
-            vk::DescriptorSetAllocateInfo().setDescriptorPool(desc_pool).setDescriptorSetCount(1).setPSetLayouts(&desc_layout);
-        auto result = device.allocateDescriptorSets(&alloc_info, &desc_set);
-        VERIFY(result == vk::Result::eSuccess);
+        for ( int nEye = 0; nEye < 2; nEye ++ )
+        {
+            auto const alloc_info =
+                vk::DescriptorSetAllocateInfo().setDescriptorPool(desc_pool).setDescriptorSetCount(1).setPSetLayouts(&desc_layout);
+            auto result = device.allocateDescriptorSets(&alloc_info, &desc_set[ nEye ]);
+            VERIFY(result == vk::Result::eSuccess);
 
-        vk::DescriptorImageInfo tex_descs[texture_count];
-        for (uint32_t i = 0; i < texture_count; i++) {
-            tex_descs[i].setSampler(textures[i].sampler);
-            tex_descs[i].setImageView(textures[i].view);
-            tex_descs[i].setImageLayout(vk::ImageLayout::eGeneral);
+            vk::DescriptorImageInfo tex_descs[texture_count];
+            for (uint32_t i = 0; i < texture_count; i++) {
+                tex_descs[i].setSampler(textures[i].sampler);
+                tex_descs[i].setImageView(textures[i].view);
+                tex_descs[i].setImageLayout(vk::ImageLayout::eGeneral);
+            }
+
+            vk::WriteDescriptorSet writes[2];
+
+            writes[0].setDstSet(desc_set[ nEye ]);
+            writes[0].setDescriptorCount(1);
+            writes[0].setDescriptorType(vk::DescriptorType::eUniformBuffer);
+            writes[0].setPBufferInfo(&uniform_data[ nEye ].buffer_info);
+
+            writes[1].setDstSet(desc_set[ nEye ]);
+            writes[1].setDstBinding(1);
+            writes[1].setDescriptorCount(texture_count);
+            writes[1].setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
+            writes[1].setPImageInfo(tex_descs);
+
+            device.updateDescriptorSets(2, writes, 0, nullptr);
         }
-
-        vk::WriteDescriptorSet writes[2];
-
-        writes[0].setDstSet(desc_set);
-        writes[0].setDescriptorCount(1);
-        writes[0].setDescriptorType(vk::DescriptorType::eUniformBuffer);
-        writes[0].setPBufferInfo(&uniform_data.buffer_info);
-
-        writes[1].setDstSet(desc_set);
-        writes[1].setDstBinding(1);
-        writes[1].setDescriptorCount(texture_count);
-        writes[1].setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
-        writes[1].setPImageInfo(tex_descs);
-
-        device.updateDescriptorSets(2, writes, 0, nullptr);
     }
 
     void prepare_framebuffers() {
         vk::ImageView attachments[2];
+        attachments[0] = m_eyeRenderTarget.view;
         attachments[1] = depth.view;
 
         auto const fb_info = vk::FramebufferCreateInfo()
                                  .setRenderPass(render_pass)
                                  .setAttachmentCount(2)
                                  .setPAttachments(attachments)
-                                 .setWidth((uint32_t)width)
-                                 .setHeight((uint32_t)height)
+                                 .setWidth((uint32_t)m_eyeRenderTarget.tex_width)
+                                 .setHeight((uint32_t)m_eyeRenderTarget.tex_height)
                                  .setLayers(1);
 
-        framebuffers.reset(new vk::Framebuffer[swapchainImageCount]);
-
-        for (uint32_t i = 0; i < swapchainImageCount; i++) {
-            attachments[0] = buffers[i].view;
-            auto const result = device.createFramebuffer(&fb_info, nullptr, &framebuffers[i]);
-            VERIFY(result == vk::Result::eSuccess);
-        }
+        auto const result = device.createFramebuffer(&fb_info, nullptr, &framebuffer);
+        VERIFY(result == vk::Result::eSuccess);
     }
 
     vk::ShaderModule prepare_fs() {
@@ -1620,23 +2099,15 @@ struct Demo {
     }
 
     void prepare_render_pass() {
-        // The initial layout for the color and depth attachments will be LAYOUT_UNDEFINED
-        // because at the start of the renderpass, we don't care about their contents.
-        // At the start of the subpass, the color attachment's layout will be transitioned
-        // to LAYOUT_COLOR_ATTACHMENT_OPTIMAL and the depth stencil attachment's layout
-        // will be transitioned to LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL.  At the end of
-        // the renderpass, the color attachment's layout will be transitioned to
-        // LAYOUT_PRESENT_SRC_KHR to be ready to present.  This is all done as part of
-        // the renderpass, no barriers are necessary.
         const vk::AttachmentDescription attachments[2] = {vk::AttachmentDescription()
-                                                              .setFormat(format)
+                                                              .setFormat(vk::Format::eR8G8B8A8Srgb)
                                                               .setSamples(vk::SampleCountFlagBits::e1)
                                                               .setLoadOp(vk::AttachmentLoadOp::eClear)
                                                               .setStoreOp(vk::AttachmentStoreOp::eStore)
                                                               .setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
                                                               .setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
-                                                              .setInitialLayout(vk::ImageLayout::eUndefined)
-                                                              .setFinalLayout(vk::ImageLayout::ePresentSrcKHR),
+                                                              .setInitialLayout(vk::ImageLayout::eColorAttachmentOptimal)
+                                                              .setFinalLayout(vk::ImageLayout::eColorAttachmentOptimal),
                                                           vk::AttachmentDescription()
                                                               .setFormat(depth.format)
                                                               .setSamples(vk::SampleCountFlagBits::e1)
@@ -1644,7 +2115,7 @@ struct Demo {
                                                               .setStoreOp(vk::AttachmentStoreOp::eDontCare)
                                                               .setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
                                                               .setStencilStoreOp(vk::AttachmentStoreOp::eDontCare)
-                                                              .setInitialLayout(vk::ImageLayout::eUndefined)
+                                                              .setInitialLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)
                                                               .setFinalLayout(vk::ImageLayout::eDepthStencilAttachmentOptimal)};
 
         auto const color_reference = vk::AttachmentReference().setAttachment(0).setLayout(vk::ImageLayout::eColorAttachmentOptimal);
@@ -1887,9 +2358,7 @@ struct Demo {
         auto result = device.waitIdle();
         VERIFY(result == vk::Result::eSuccess);
 
-        for (i = 0; i < swapchainImageCount; i++) {
-            device.destroyFramebuffer(framebuffers[i], nullptr);
-        }
+        device.destroyFramebuffer(framebuffer, nullptr);
 
         device.destroyDescriptorPool(desc_pool, nullptr);
 
@@ -1910,12 +2379,15 @@ struct Demo {
         device.destroyImage(depth.image, nullptr);
         device.freeMemory(depth.mem, nullptr);
 
-        device.destroyBuffer(uniform_data.buf, nullptr);
-        device.freeMemory(uniform_data.mem, nullptr);
+        device.destroyBuffer(uniform_data[ vr::Eye_Left ].buf, nullptr);
+        device.destroyBuffer(uniform_data[ vr::Eye_Right ].buf, nullptr);
+        device.freeMemory(uniform_data[ vr::Eye_Left ].mem, nullptr);
+        device.freeMemory(uniform_data[ vr::Eye_Right ].mem, nullptr);
 
         for (i = 0; i < swapchainImageCount; i++) {
             device.destroyImageView(buffers[i].view, nullptr);
-            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd);
+            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[ vr::Eye_Left ]);
+            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[ vr::Eye_Right ]);
         }
 
         device.destroyCommandPool(cmd_pool, nullptr);
@@ -1978,23 +2450,17 @@ struct Demo {
     }
 
     void update_data_buffer() {
-        mat4x4 VP;
-        mat4x4_mul(VP, projection_matrix, view_matrix);
 
-        // Rotate around the Y axis
-        mat4x4 Model;
-        mat4x4_dup(Model, model_matrix);
-        mat4x4_rotate(model_matrix, Model, 0.0f, 1.0f, 0.0f, (float)degreesToRadians(spin_angle));
+        for ( int32_t nEye = 0; nEye < 2; nEye++ )
+        {
+            auto data = device.mapMemory(uniform_data[ nEye ].mem, 0, uniform_data[ nEye ].mem_alloc.allocationSize, vk::MemoryMapFlags());
+            VERIFY(data.result == vk::Result::eSuccess);
 
-        mat4x4 MVP;
-        mat4x4_mul(MVP, VP, model_matrix);
+            // OpenVR get the eye projection matrix
+            memcpy( data.value, g_VRInterface.GetCurrentViewProjectionMatrix( ( vr::Hmd_Eye) nEye ).get(), sizeof( Matrix4 ) );
 
-        auto data = device.mapMemory(uniform_data.mem, 0, uniform_data.mem_alloc.allocationSize, vk::MemoryMapFlags());
-        VERIFY(data.result == vk::Result::eSuccess);
-
-        memcpy(data.value, (const void *)&MVP[0][0], sizeof(MVP));
-
-        device.unmapMemory(uniform_data.mem);
+            device.unmapMemory(uniform_data[ nEye ].mem);
+        }
     }
 
     bool loadTexture(const char *filename, uint8_t *rgba_data, vk::SubresourceLayout *layout, int32_t *width, int32_t *height) {
@@ -2430,12 +2896,16 @@ struct Demo {
     texture_object textures[texture_count];
     texture_object staging_texture;
 
-    struct {
+    struct UniformData_t
+    {
         vk::Buffer buf;
         vk::MemoryAllocateInfo mem_alloc;
         vk::DeviceMemory mem;
         vk::DescriptorBufferInfo buffer_info;
-    } uniform_data;
+    };
+
+    UniformData_t uniform_data[ 2 ]; // OpenVR: one for each eye
+    texture_object m_eyeRenderTarget;
 
     vk::CommandBuffer cmd;  // Buffer for initialization commands
     vk::PipelineLayout pipeline_layout;
@@ -2456,9 +2926,9 @@ struct Demo {
     vk::ShaderModule frag_shader_module;
 
     vk::DescriptorPool desc_pool;
-    vk::DescriptorSet desc_set;
+    vk::DescriptorSet desc_set[2]; // OpenVR: one for each eye
 
-    std::unique_ptr<vk::Framebuffer[]> framebuffers;
+    vk::Framebuffer framebuffer;
 
     bool quit;
     uint32_t curFrame;
@@ -2558,6 +3028,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR pCmdLine,
     demo.connection = hInstance;
     strncpy(demo.name, "cube", APP_NAME_STR_LEN);
     demo.create_window();
+
     demo.init_vk_swapchain();
 
     demo.prepare();

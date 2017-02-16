@@ -17,9 +17,11 @@ REVISION_DIR="$CURRENT_DIR/external_revisions"
 GLSLANG_REVISION=$(cat "${REVISION_DIR}/glslang_revision")
 SPIRV_TOOLS_REVISION=$(cat "${REVISION_DIR}/spirv-tools_revision")
 SPIRV_HEADERS_REVISION=$(cat "${REVISION_DIR}/spirv-headers_revision")
+OPENVR_REVISION=$(cat "${REVISION_DIR}/openvr_revision")
 echo "GLSLANG_REVISION=${GLSLANG_REVISION}"
 echo "SPIRV_TOOLS_REVISION=${SPIRV_TOOLS_REVISION}"
 echo "SPIRV_HEADERS_REVISION=${SPIRV_HEADERS_REVISION}"
+echo "OPENVR_REVISION=${OPENVR_REVISION}"
 
 BUILDDIR=${CURRENT_DIR}
 BASEDIR="$BUILDDIR/external"
@@ -69,6 +71,23 @@ function update_spirv-tools () {
    git checkout ${SPIRV_HEADERS_REVISION}
 }
 
+function create_openvr () {
+   rm -rf "${BASEDIR}"/openvr
+   echo "Creating local openvr repository (${BASEDIR}/openvr)."
+   mkdir -p "${BASEDIR}"/openvr
+   cd "${BASEDIR}"/openvr
+   git clone https://github.com/ValveSoftware/openvr.git .
+   git checkout ${OPENVR_REVISION}
+}
+
+function update_openvr () {
+   echo "Updating ${BASEDIR}/openvr"
+   cd "${BASEDIR}"/openvr
+   git fetch --all
+   git checkout --force ${OPENVR_REVISION}
+}
+
+
 function build_glslang () {
    echo "Building ${BASEDIR}/glslang"
    cd "${BASEDIR}"/glslang
@@ -92,11 +111,13 @@ function build_spirv-tools () {
 # If no options are provided, build everything
 INCLUDE_GLSLANG=false
 INCLUDE_SPIRV_TOOLS=false
+INCLUDE_OPENVR=false
 
 if [ "$#" == 0 ]; then
   echo "Building glslang, spirv-tools"
   INCLUDE_GLSLANG=true
   INCLUDE_SPIRV_TOOLS=true
+  INCLUDE_OPENVR=true
 else
   # Parse options
   while [[ $# > 0 ]]
@@ -114,11 +135,17 @@ else
         INCLUDE_SPIRV_TOOLS=true
         echo "Building spirv-tools ($option)"
         ;;
+        -v|--openvr)
+        INCLUDE_OPENVR=true
+        echo "Building openvr ($option)"
+        ;;
+  
         *)
         echo "Unrecognized option: $option"
         echo "Try the following:"
         echo " -g | --glslang      # enable glslang"
         echo " -s | --spirv-tools  # enable spirv-tools"
+        echo " -v | --openvr       # enable openvr"
         exit 1
         ;;
     esac
@@ -141,4 +168,11 @@ if [ ${INCLUDE_SPIRV_TOOLS} == "true" ]; then
     fi
     update_spirv-tools
     build_spirv-tools
+fi
+
+if [ ${INCLUDE_OPENVR} == "true" ]; then
+    if [ ! -d "${BASEDIR}/openvr" -o ! -d "${BASEDIR}/openvr/.git" ]; then
+       create_openvr
+    fi
+    update_openvr
 fi
