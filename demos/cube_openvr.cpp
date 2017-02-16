@@ -1153,9 +1153,14 @@ struct Demo {
                 validation_found = check_layers(ARRAY_SIZE(instance_validation_layers_alt1), instance_validation_layers,
                                                 instance_layer_count, instance_layers.get());
                 if (validation_found) {
+                    instance_validation_layers = instance_validation_layers_alt1;
                     enabled_layer_count = ARRAY_SIZE(instance_validation_layers_alt1);
-                    enabled_layers[0] = "VK_LAYER_LUNARG_standard_validation";
-                    validation_layer_count = 1;
+                    validation_found = check_layers(ARRAY_SIZE(instance_validation_layers_alt1), instance_validation_layers,
+                                                    instance_layer_count, instance_layers.get());
+                    validation_layer_count = ARRAY_SIZE(instance_validation_layers_alt1);
+                    for (uint32_t i = 0; i < validation_layer_count; i++) {
+                        enabled_layers[i] = instance_validation_layers[i];
+                    }
                 }
             }
 
