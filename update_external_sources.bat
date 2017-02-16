@@ -17,6 +17,7 @@ set BASE_DIR="%BUILD_DIR%external"
 set REVISION_DIR="%BUILD_DIR%external_revisions"
 set GLSLANG_DIR=%BASE_DIR%\glslang
 set SPIRV_TOOLS_DIR=%BASE_DIR%\spirv-tools
+set OPENVR_DIR=%BASE_DIR%\openvr
 
 REM // ======== Parameter parsing ======== //
 
@@ -26,14 +27,16 @@ REM // ======== Parameter parsing ======== //
       echo Available options:
       echo   --sync-glslang      just pull glslang_revision
       echo   --sync-spirv-tools  just pull spirv-tools_revision
-      echo   --build-glslang     pulls glslang_revision, configures CMake, builds Release and Debug
+	  echo   --sync-openvr       just pull openvr_revision
+	  echo   --build-glslang     pulls glslang_revision, configures CMake, builds Release and Debug
       echo   --build-spirv-tools pulls spirv-tools_revision, configures CMake, builds Release and Debug
-      echo   --all               sync and build glslang, LunarGLASS, spirv-tools
+      echo   --all               sync and build glslang, spirv-tools, sync openvr
       goto:finish
    )
 
    set sync-glslang=0
    set sync-spirv-tools=0
+   set sync-openvr=0
    set build-glslang=0
    set build-spirv-tools=0
    set check-glslang-build-dependencies=0
@@ -50,6 +53,12 @@ REM // ======== Parameter parsing ======== //
 
       if "%1" == "--sync-spirv-tools" (
          set sync-spirv-tools=1
+         shift
+         goto:parameterLoop
+      )
+	  
+	  if "%1" == "--sync-openvr" (
+         set sync-openvr=1
          shift
          goto:parameterLoop
       )
@@ -74,6 +83,7 @@ REM // ======== Parameter parsing ======== //
       if "%1" == "--all" (
          set sync-glslang=1
          set sync-spirv-tools=1
+		 set sync-openvr=1
          set build-glslang=1
          set build-spirv-tools=1
          set check-glslang-build-dependencies=1
@@ -143,12 +153,21 @@ if not exist %REVISION_DIR%\spirv-headers_revision (
    goto:error
 )
 
+if not exist %REVISION_DIR%\openvr_revision (
+   echo.
+   echo Missing openvr_revision file!  Place it in %REVISION_DIR% with target version in it.
+   set errorCode=1
+   goto:error
+)
+
 set /p GLSLANG_REVISION= < %REVISION_DIR%\glslang_revision
 set /p SPIRV_TOOLS_REVISION= < %REVISION_DIR%\spirv-tools_revision
 set /p SPIRV_HEADERS_REVISION= < %REVISION_DIR%\spirv-headers_revision
+set /p OPENVR_REVISION= < %REVISION_DIR%\openvr_revision
 echo GLSLANG_REVISION=%GLSLANG_REVISION%
 echo SPIRV_TOOLS_REVISION=%SPIRV_TOOLS_REVISION%
 echo SPIRV_HEADERS_REVISION=%SPIRV_HEADERS_REVISION%
+echo OPENVR_REVISION=%OPENVR_REVISION%
 
 
 echo Creating and/or updating glslang, spirv-tools in %BASE_DIR%
@@ -169,6 +188,15 @@ if %sync-spirv-tools% equ 1 (
    )
    if %errorCode% neq 0 (goto:error)
    call:update_spirv-tools
+   if %errorCode% neq 0 (goto:error)
+)
+
+if %sync-openvr% equ 1 (
+   if not exist %OPENVR_DIR% (
+      call:create_openvr
+   )
+   if %errorCode% neq 0 (goto:error)
+   call:update_openvr
    if %errorCode% neq 0 (goto:error)
 )
 
@@ -243,6 +271,20 @@ goto:eof
    )
 goto:eof
 
+:create_openvr
+   echo.
+   echo Creating local openvr repository %OPENVR_DIR%)
+   mkdir %OPENVR_DIR%
+   cd %OPENVR_DIR%
+   git clone https://github.com/ValveSoftware/openvr.git .
+   git checkout %OPENVR_REVISION%
+   if not exist %OPRNVR_DIR%\headers (
+      echo openvr source download failed!
+      set errorCode=1
+   )
+goto:eof
+
+
 :update_spirv-tools
    echo.
    echo Updating %SPIRV_TOOLS_DIR%
@@ -252,6 +294,14 @@ goto:eof
    cd %SPIRV_TOOLS_DIR%\external\spirv-headers
    git fetch --all
    git checkout %SPIRV_HEADERS_REVISION%
+goto:eof
+
+:update_openvr
+   echo.
+   echo Updating %OPENVR_DIR%
+   cd %OPENVR_DIR%
+   git fetch --all
+   git checkout %OPENVR_DIR_REVISION%
 goto:eof
 
 :build_glslang

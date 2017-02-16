@@ -979,7 +979,7 @@ struct Demo {
         vec3 origin = {0, 0, 0};
         vec3 up = {0.0f, 1.0f, 0.0};
 
-        presentMode = vk::PresentModeKHR::eImmediate;
+        presentMode = vk::PresentModeKHR::eMailbox;
         frameCount = UINT32_MAX;
         use_xlib = false;
 

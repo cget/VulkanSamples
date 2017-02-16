@@ -159,7 +159,7 @@ else()
         set (LIB_DIR "Win32")
     endif()
 
-    add_executable(cube_openvr WIN32 cube_openvr.cpp ${CMAKE_BINARY_DIR}/demos/cube-vert.spv ${CMAKE_BINARY_DIR}/demos/cube-frag.spv)
+    add_executable(cube_openvr WIN32 cube_openvr.cpp Matrices.cpp ${CMAKE_BINARY_DIR}/demos/cube-vert.spv ${CMAKE_BINARY_DIR}/demos/cube-frag.spv)
     include_directories(${OPENVR_INCLUDE_DIR})
     target_link_libraries(cube_openvr ${LIBRARIES} ${OPENVR_LIB})
 endif()

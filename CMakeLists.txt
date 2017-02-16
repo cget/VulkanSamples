@@ -143,6 +143,12 @@ if (WIN32)
         set (SPIRV_TOOLS_SEARCH_PATH "${EXTERNAL_SOURCE_ROOT}/spirv-tools/${BUILDTGT_DIR}/source/${RELEASE_DECORATION}")
         set (SPIRV_TOOLS_DEBUG_SEARCH_PATH "${EXTERNAL_SOURCE_ROOT}/spirv-tools/${BUILDTGT_DIR}/source/${DEBUG_DECORATION}")
     endif()
+	
+	if(CMAKE_CL_64)
+		set (OPENVR_SEARCH_PATH "${EXTERNAL_SOURCE_ROOT}/openvr/lib/win64")
+    else()
+		set (OPENVR_SEARCH_PATH "${EXTERNAL_SOURCE_ROOT}/openvr/lib/win32")
+    endif()
 else()
     #non windows
     if(CUSTOM_GLSLANG_BIN_ROOT)
