@@ -904,7 +904,7 @@ struct Demo {
 
         vk::Rect2D const scissor(vk::Offset2D(0, 0), vk::Extent2D(m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height));
         commandBuffer.setScissor(0, 1, &scissor);
-        commandBuffer.draw(12 * 3, 1, 0, 0);
+        commandBuffer.draw(12 * 3, 1000, 0, 0 );
         commandBuffer.endRenderPass();
 
         // Transition from TRANSFER_SRC_OPTIMAL -> COLOR_ATTACHMENT_OPTIMAL for the OpenVR Submit
@@ -2044,7 +2044,7 @@ struct Demo {
                                            .setDepthClampEnable(VK_FALSE)
                                            .setRasterizerDiscardEnable(VK_FALSE)
                                            .setPolygonMode(vk::PolygonMode::eFill)
-                                           .setCullMode(vk::CullModeFlagBits::eNone)
+                                           .setCullMode(vk::CullModeFlagBits::eBack)
                                            .setFrontFace(vk::FrontFace::eClockwise)
                                            .setDepthBiasEnable(VK_FALSE)
                                            .setLineWidth(1.0f);
@@ -2310,7 +2310,7 @@ struct Demo {
 
     vk::ShaderModule prepare_vs() {
         size_t size = 0;
-        void *vertShaderCode = read_spv("cube-vert.spv", &size);
+        void *vertShaderCode = read_spv("cube_openvr-vert.spv", &size);
 
         vert_shader_module = prepare_shader_module(vertShaderCode, size);
 

@@ -83,6 +83,10 @@ if(WIN32)
        COMMAND ${GLSLANG_VALIDATOR} -s -V -o ${CMAKE_BINARY_DIR}/demos/cube-vert.spv ${PROJECT_SOURCE_DIR}/demos/cube.vert
        DEPENDS cube.vert ${GLSLANG_VALIDATOR}
        )
+    add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/demos/cube_openvr-vert.spv
+       COMMAND ${GLSLANG_VALIDATOR} -s -V -o ${CMAKE_BINARY_DIR}/demos/cube_openvr-vert.spv ${PROJECT_SOURCE_DIR}/demos/cube_openvr.vert
+       DEPENDS cube_openvr.vert ${GLSLANG_VALIDATOR}
+       )
     add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/demos/cube-frag.spv
        COMMAND ${GLSLANG_VALIDATOR} -s -V -o ${CMAKE_BINARY_DIR}/demos/cube-frag.spv ${PROJECT_SOURCE_DIR}/demos/cube.frag
        DEPENDS cube.frag ${GLSLANG_VALIDATOR}
@@ -94,6 +98,10 @@ else()
         add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/demos/cube-vert.spv
             COMMAND ${GLSLANG_VALIDATOR} -s -V -o cube-vert.spv ${PROJECT_SOURCE_DIR}/demos/cube.vert
             DEPENDS cube.vert ${GLSLANG_VALIDATOR}
+            )
+        add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/demos/cube_openvr-vert.spv
+            COMMAND ${GLSLANG_VALIDATOR} -s -V -o cube_openvr-vert.spv ${PROJECT_SOURCE_DIR}/demos/cube_openvr.vert
+            DEPENDS cube_openvr.vert ${GLSLANG_VALIDATOR}
             )
         add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/demos/cube-frag.spv
             COMMAND ${GLSLANG_VALIDATOR} -s -V -o cube-frag.spv ${PROJECT_SOURCE_DIR}/demos/cube.frag
@@ -148,7 +156,7 @@ endif()
 
 if(NOT WIN32)
     if (${CMAKE_SYSTEM_PROCESSOR} STREQUAL ${CMAKE_HOST_SYSTEM_PROCESSOR})
-        add_executable(cube_openvr cube_openvr.cpp Matrices.cpp ${CMAKE_BINARY_DIR}/demos/cube-vert.spv ${CMAKE_BINARY_DIR}/demos/cube-frag.spv)
+        add_executable(cube_openvr cube_openvr.cpp Matrices.cpp ${CMAKE_BINARY_DIR}/demos/cube_openvr-vert.spv ${CMAKE_BINARY_DIR}/demos/cube-frag.spv)
         include_directories(${OPENVR_INCLUDE_DIR})
         target_link_libraries(cube_openvr ${LIBRARIES} ${OPENVR_LIB})
     endif()
@@ -159,7 +167,7 @@ else()
         set (LIB_DIR "Win32")
     endif()
 
-    add_executable(cube_openvr WIN32 cube_openvr.cpp Matrices.cpp ${CMAKE_BINARY_DIR}/demos/cube-vert.spv ${CMAKE_BINARY_DIR}/demos/cube-frag.spv)
+    add_executable(cube_openvr WIN32 cube_openvr.cpp Matrices.cpp ${CMAKE_BINARY_DIR}/demos/cube_openvr-vert.spv ${CMAKE_BINARY_DIR}/demos/cube-frag.spv)
     include_directories(${OPENVR_INCLUDE_DIR})
     target_link_libraries(cube_openvr ${LIBRARIES} ${OPENVR_LIB})
 endif()
