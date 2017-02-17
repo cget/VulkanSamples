@@ -33,6 +33,7 @@
 #include <cstring>
 #include <csignal>
 #include <memory>
+#include <inttypes.h>
 
 #if defined(VK_USE_PLATFORM_MIR_KHR)
 #warning "Cubepp does not have code for Mir at this time"
@@ -114,19 +115,19 @@ static VkBool32 VKAPI_PTR VKDebugMessageCallback( VkDebugReportFlagsEXT flags, V
     switch ( flags )
     {
     case VK_DEBUG_REPORT_ERROR_BIT_EXT:
-        sprintf( buf, "VK ERROR %s %lu:%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        sprintf( buf, "VK ERROR %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
         break;
     case VK_DEBUG_REPORT_WARNING_BIT_EXT:
-        sprintf( buf, "VK WARNING %s %lu:%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        sprintf( buf, "VK WARNING %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
         break;
     case VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT:
-        sprintf( buf, "VK PERF %s %lu:%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        sprintf( buf, "VK PERF %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
         break;
     case VK_DEBUG_REPORT_INFORMATION_BIT_EXT:
-        sprintf( buf, "VK INFO %s %lu:%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        sprintf( buf, "VK INFO %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
         break;
     case VK_DEBUG_REPORT_DEBUG_BIT_EXT:
-        sprintf( buf, "VK DEBUG %s %lu:%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        sprintf( buf, "VK DEBUG %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
         break;
     default:
         break;
