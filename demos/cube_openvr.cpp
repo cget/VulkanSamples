@@ -796,10 +796,10 @@ struct Demo {
 
         vr::VRVulkanTextureData_t vulkanData;
         vulkanData.m_nImage = ( uint64_t ) ( VkImage )m_eyeRenderTarget.image;
-        vulkanData.m_pDevice = device;
-        vulkanData.m_pPhysicalDevice = gpu;
-        vulkanData.m_pInstance = inst;
-        vulkanData.m_pQueue = graphics_queue;
+        vulkanData.m_pDevice = ( VkDevice_T * ) device;
+        vulkanData.m_pPhysicalDevice = ( VkPhysicalDevice_T * ) gpu;
+        vulkanData.m_pInstance = ( VkInstance_T *) inst;
+        vulkanData.m_pQueue = ( VkQueue_T * ) graphics_queue;
         vulkanData.m_nQueueFamilyIndex = graphics_queue_family_index;
 
         vulkanData.m_nWidth = m_eyeRenderTarget.tex_width;
@@ -1390,7 +1390,7 @@ struct Demo {
         // OpenVR BEGIN: Query for OpenVR device extensions and add to the list
         //-----------------------------------------------------------------------------------------
         std::vector< std::string > openvrDeviceExtensions;
-        if ( !g_VRInterface.GetVulkanDeviceExtensionsRequired( gpu, openvrDeviceExtensions ) )
+        if ( !g_VRInterface.GetVulkanDeviceExtensionsRequired( ( VkPhysicalDevice ) gpu, openvrDeviceExtensions ) )
         {
             ERR_EXIT( "Could not determine OpenVR Vulkan device extensions.", "OpenVR initialization failure." );
         }
