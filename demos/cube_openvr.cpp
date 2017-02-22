@@ -33,6 +33,7 @@
 #include <cstring>
 #include <csignal>
 #include <memory>
+#include <inttypes.h>
 
 #if defined(VK_USE_PLATFORM_MIR_KHR)
 #warning "Cubepp does not have code for Mir at this time"
@@ -106,6 +107,36 @@ struct vktexcube_vs_uniform {
     float position[12 * 3][4];
     float attr[12 * 3][4];
 };
+
+static VkBool32 VKAPI_PTR VKDebugMessageCallback( VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType, uint64_t object,
+    size_t location, int32_t messageCode, const char* pLayerPrefix, const char *pMessage, void *pUserData )
+{
+    char buf[4096] = { 0 };
+    switch ( flags )
+    {
+    case VK_DEBUG_REPORT_ERROR_BIT_EXT:
+        sprintf( buf, "VK ERROR %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        break;
+    case VK_DEBUG_REPORT_WARNING_BIT_EXT:
+        sprintf( buf, "VK WARNING %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        break;
+    case VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT:
+        sprintf( buf, "VK PERF %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        break;
+    case VK_DEBUG_REPORT_INFORMATION_BIT_EXT:
+        sprintf( buf, "VK INFO %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        break;
+    case VK_DEBUG_REPORT_DEBUG_BIT_EXT:
+        sprintf( buf, "VK DEBUG %s %" PRIu64 ":%d: %s\n", pLayerPrefix, uint64_t( location ), messageCode, pMessage );
+        break;
+    default:
+        break;
+    }
+
+    printf( "%s\n", buf );
+
+    return VK_FALSE;
+}
 
 //--------------------------------------------------------------------------------------
 // Class to interface with OpenVR
@@ -565,6 +596,8 @@ struct Demo {
           prepared{false},
           use_staging_buffer{false},
           use_xlib{false},
+          m_flResolutionScale( 1.0f ),
+          m_nMSAASampleCount( 1 ),
           graphics_queue_family_index{0},
           present_queue_family_index{0},
           enabled_extension_count{0},
@@ -637,6 +670,9 @@ struct Demo {
     void cleanup() {
         prepared = false;
         device.waitIdle();
+
+        // OpenVR: Shutdown
+        g_VRInterface.Shutdown();
 
         // Wait for fences from present operations
         for (uint32_t i = 0; i < FRAME_LAG; i++) {
@@ -805,7 +841,7 @@ struct Demo {
         vulkanData.m_nWidth = m_eyeRenderTarget.tex_width;
         vulkanData.m_nHeight = m_eyeRenderTarget.tex_height;
         vulkanData.m_nFormat = ( uint32_t ) vk::Format::eR8G8B8A8Srgb;
-        vulkanData.m_nSampleCount = 1;
+        vulkanData.m_nSampleCount = m_nMSAASampleCount;
 
         vr::Texture_t texture = { &vulkanData, vr::TextureType_Vulkan, vr::ColorSpace_Auto };
         vr::VRCompositor()->Submit( vr::Eye_Left, &texture, &textureBounds );
@@ -918,13 +954,31 @@ struct Demo {
                                              .setMipLevel(0)
                                              .setBaseArrayLayer(0)
                                              .setLayerCount(1);
-        auto const blitRegion =
-            vk::ImageBlit()
-                .setSrcSubresource( subresource )
-                .setSrcOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height, 1 ) } )
-                .setDstSubresource(subresource)
-                .setDstOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( width, height, 1 ) } );
-        commandBuffer.blitImage( m_eyeRenderTarget.image, vk::ImageLayout::eTransferSrcOptimal, buffers[ current_buffer ].image, vk::ImageLayout::eTransferDstOptimal, { blitRegion }, vk::Filter::eNearest );
+
+        if ( m_nMSAASampleCount <= 1 )
+        {
+            auto const blitRegion =
+                vk::ImageBlit()
+                    .setSrcSubresource( subresource )
+                    .setSrcOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height, 1 ) } )
+                    .setDstSubresource(subresource)
+                    .setDstOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( width, height, 1 ) } );
+            commandBuffer.blitImage( m_eyeRenderTarget.image, vk::ImageLayout::eTransferSrcOptimal, buffers[ current_buffer ].image, vk::ImageLayout::eTransferDstOptimal, { blitRegion }, vk::Filter::eNearest );
+        }
+        else
+        {
+            // In MSAA, resolve the portion we have room for on the screen which will just be a small upper corner.  Otherwise
+            // we could resolve to an intermediate target and then blit, but it would require another image.
+            auto const resolveRegion =
+                vk::ImageResolve()
+                    .setSrcSubresource( subresource )
+                    .setSrcOffset( vk::Offset3D( 0, 0, 0 ) )
+                    .setDstSubresource( subresource )
+                    .setDstOffset( vk::Offset3D( 0, 0, 0 ) )
+                    .setExtent( vk::Extent3D( width, height, 1 ) );
+            commandBuffer.resolveImage( m_eyeRenderTarget.image, vk::ImageLayout::eTransferSrcOptimal, buffers[ current_buffer ].image, vk::ImageLayout::eTransferDstOptimal, { resolveRegion } );
+
+        }
 
          // Transition swapchain image to PRESENT_SRC_KHR for companion window
         set_image_layout( commandBuffer, buffers[ current_buffer ].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR,
@@ -1012,6 +1066,18 @@ struct Demo {
         use_xlib = false;
 
         for (int i = 1; i < argc; i++) {
+            if ( ( strcmp( argv[i], "--vr_scale") == 0 ) && ( i < ( argc - 1 ) ) )
+            {
+                sscanf( argv[ i + 1 ], "%f", &m_flResolutionScale );
+                i++;
+                continue;
+            }
+            if ( ( strcmp( argv[i], "--vr_msaa") == 0 ) && ( i < ( argc - 1 ) ) )
+            {
+                sscanf( argv[ i + 1 ], "%d", &m_nMSAASampleCount );
+                i++;
+                continue;
+            }
             if (strcmp(argv[i], "--use_staging") == 0) {
                 use_staging_buffer = true;
                 continue;
@@ -1044,7 +1110,7 @@ struct Demo {
             }
 
             fprintf(stderr,
-                    "Usage:\n  %s [--use_staging] [--validate] [--break] "
+                    "Usage:\n  %s [--vr_scale <scale_factor] [--vr_msaa <sample_count>] [--use_staging] [--validate] [--break] "
                     "[--c <framecount>] [--suppress_popups] [--present_mode <present mode enum>]\n"
                     "VK_PRESENT_MODE_IMMEDIATE_KHR = %d\n"
                     "VK_PRESENT_MODE_MAILBOX_KHR = %d\n"
@@ -1146,6 +1212,7 @@ struct Demo {
 
         // Look for validation layers
         vk::Bool32 validation_found = VK_FALSE;
+        bool bDebugReport = false;
         if (validate) {
             auto result = vk::enumerateInstanceLayerProperties(&instance_layer_count, nullptr);
             VERIFY(result == vk::Result::eSuccess);
@@ -1197,6 +1264,10 @@ struct Demo {
                 if (!strcmp(VK_KHR_SURFACE_EXTENSION_NAME, instance_extensions[i].extensionName)) {
                     surfaceExtFound = 1;
                     extension_names[enabled_extension_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
+                }
+                if ( validate && !strcmp(VK_EXT_DEBUG_REPORT_EXTENSION_NAME, instance_extensions[i].extensionName)) {
+                    extension_names[enabled_extension_count++] = VK_EXT_DEBUG_REPORT_EXTENSION_NAME;
+                    bDebugReport = true;
                 }
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
                 if (!strcmp(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, instance_extensions[i].extensionName)) {
@@ -1326,6 +1397,21 @@ struct Demo {
                 "Please look at the Getting Started guide for additional "
                 "information.\n",
                 "vkCreateInstance Failure");
+        }
+
+        if ( bDebugReport )
+        {
+            PFN_vkCreateDebugReportCallbackEXT vkCreateDebugReportCallbackEXT;
+            vkCreateDebugReportCallbackEXT = ( PFN_vkCreateDebugReportCallbackEXT ) vkGetInstanceProcAddr( inst, "vkCreateDebugReportCallbackEXT" );
+
+            VkDebugReportCallbackCreateInfoEXT debugReportCreateInfo = {};
+            debugReportCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CREATE_INFO_EXT;
+            debugReportCreateInfo.pNext = NULL;
+            debugReportCreateInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT;
+            debugReportCreateInfo.pfnCallback = VKDebugMessageCallback;
+            debugReportCreateInfo.pUserData = NULL;
+            VkDebugReportCallbackEXT pDebugReportCallbackEXT;
+            vkCreateDebugReportCallbackEXT( inst, &debugReportCreateInfo, NULL, &pDebugReportCallbackEXT );
         }
 
         /* Make initial call to query gpu_count, then second call for gpu info*/
@@ -1572,8 +1658,8 @@ struct Demo {
     // OpenVR: create/prepare the images needed for each eye
     void prepare_openvr()
     {
-        m_eyeRenderTarget.tex_width = g_VRInterface.GetRenderWidth();
-        m_eyeRenderTarget.tex_height = g_VRInterface.GetRenderHeight();
+        m_eyeRenderTarget.tex_width = ( uint32_t ) ( ( float )g_VRInterface.GetRenderWidth() * m_flResolutionScale );
+        m_eyeRenderTarget.tex_height = ( uint32_t ) ( ( float) g_VRInterface.GetRenderHeight() * m_flResolutionScale );
 
         auto const image_create_info = vk::ImageCreateInfo()
                                            .setImageType(vk::ImageType::e2D)
@@ -1581,7 +1667,7 @@ struct Demo {
                                            .setExtent({(uint32_t)m_eyeRenderTarget.tex_width, (uint32_t)m_eyeRenderTarget.tex_height, 1})
                                            .setMipLevels(1)
                                            .setArrayLayers(1)
-                                           .setSamples(vk::SampleCountFlagBits::e1)
+                                           .setSamples(( vk::SampleCountFlagBits) m_nMSAASampleCount)
                                            .setTiling(vk::ImageTiling::eOptimal)
                                            .setUsage(vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled)
                                            .setSharingMode(vk::SharingMode::eExclusive)
@@ -1922,10 +2008,10 @@ struct Demo {
         auto const image = vk::ImageCreateInfo()
                                .setImageType(vk::ImageType::e2D)
                                .setFormat(depth.format)
-                               .setExtent({(uint32_t)g_VRInterface.GetRenderWidth(), (uint32_t)g_VRInterface.GetRenderHeight(), 1})
+                               .setExtent({(uint32_t)m_eyeRenderTarget.tex_width, (uint32_t)m_eyeRenderTarget.tex_height, 1})
                                .setMipLevels(1)
                                .setArrayLayers(1)
-                               .setSamples(vk::SampleCountFlagBits::e1)
+                               .setSamples((vk::SampleCountFlagBits)m_nMSAASampleCount)
                                .setTiling(vk::ImageTiling::eOptimal)
                                .setUsage(vk::ImageUsageFlagBits::eDepthStencilAttachment)
                                .setSharingMode(vk::SharingMode::eExclusive)
@@ -1943,7 +2029,7 @@ struct Demo {
         depth.mem_alloc.setMemoryTypeIndex(0);
 
         auto const pass =
-            memory_type_from_properties(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits(0), &depth.mem_alloc.memoryTypeIndex);
+            memory_type_from_properties(mem_reqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal, &depth.mem_alloc.memoryTypeIndex);
         VERIFY(pass);
 
         result = device.allocateMemory(&depth.mem_alloc, nullptr, &depth.mem);
@@ -2089,7 +2175,10 @@ struct Demo {
                                            .setDepthBiasEnable(VK_FALSE)
                                            .setLineWidth(1.0f);
 
-        auto const multisampleInfo = vk::PipelineMultisampleStateCreateInfo();
+        uint32_t nSampleMask = 0xFFFFFFFF;
+        auto const multisampleInfo = vk::PipelineMultisampleStateCreateInfo()
+                .setRasterizationSamples( (vk::SampleCountFlagBits )m_nMSAASampleCount )
+                .setPSampleMask( &nSampleMask );
 
         auto const stencilOp = vk::StencilOpState()
                                    .setFailOp(vk::StencilOp::eKeep)
@@ -2141,7 +2230,7 @@ struct Demo {
     void prepare_render_pass() {
         const vk::AttachmentDescription attachments[2] = {vk::AttachmentDescription()
                                                               .setFormat(vk::Format::eR8G8B8A8Srgb)
-                                                              .setSamples(vk::SampleCountFlagBits::e1)
+                                                              .setSamples((vk::SampleCountFlagBits)m_nMSAASampleCount)
                                                               .setLoadOp(vk::AttachmentLoadOp::eClear)
                                                               .setStoreOp(vk::AttachmentStoreOp::eStore)
                                                               .setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
@@ -2150,7 +2239,7 @@ struct Demo {
                                                               .setFinalLayout(vk::ImageLayout::eColorAttachmentOptimal),
                                                           vk::AttachmentDescription()
                                                               .setFormat(depth.format)
-                                                              .setSamples(vk::SampleCountFlagBits::e1)
+                                                              .setSamples((vk::SampleCountFlagBits)m_nMSAASampleCount)
                                                               .setLoadOp(vk::AttachmentLoadOp::eClear)
                                                               .setStoreOp(vk::AttachmentStoreOp::eDontCare)
                                                               .setStencilLoadOp(vk::AttachmentLoadOp::eDontCare)
@@ -2889,6 +2978,8 @@ struct Demo {
     bool use_staging_buffer;
     bool use_xlib;
     bool separate_present_queue;
+    float m_flResolutionScale;
+    int32_t m_nMSAASampleCount;
 
     vk::Instance inst;
     vk::PhysicalDevice gpu;
