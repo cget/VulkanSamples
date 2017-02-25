@@ -535,9 +535,13 @@ static const float g_uv_buffer_data[] = {
 };
 // clang-format on
 
+const int32_t NUM_FIDELITY_LEVELS = 8;
+const float MIN_FIDELITY_SIZE = 0.2f;
+const float MAX_FIDELITY_SIZE = 1.0f;
+
 typedef struct {
     vk::Image image;
-    vk::CommandBuffer cmd[2]; // OpenVR: one for each eye
+    vk::CommandBuffer cmd[2][NUM_FIDELITY_LEVELS]; // OpenVR: one for each eye
     vk::CommandBuffer graphics_to_present_cmd;
     vk::ImageView view;
 } SwapchainBuffers;
@@ -616,7 +620,9 @@ struct Demo {
           use_break{false},
           suppress_popups{false},
           current_buffer{0},
-          queue_family_count{0} {
+          queue_family_count{0},
+          m_nCurFidelityLevel{0}
+    {
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
         memset(name, '\0', APP_NAME_STR_LEN);
 #endif
@@ -712,10 +718,13 @@ struct Demo {
             device.freeMemory(uniform_data[ i ].mem, nullptr);
         }
 
-        for (uint32_t i = 0; i < swapchainImageCount; i++) {
-            device.destroyImageView(buffers[i].view, nullptr);
-            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[vr::Eye_Left]);
-            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[vr::Eye_Right]);
+        for ( uint32_t nFidelityLevel = 0; nFidelityLevel < NUM_FIDELITY_LEVELS; nFidelityLevel++ )
+        {
+            for (uint32_t i = 0; i < swapchainImageCount; i++) {
+                device.destroyImageView(buffers[i].view, nullptr);
+                device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[vr::Eye_Left][nFidelityLevel]);
+                device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[vr::Eye_Right][nFidelityLevel]);
+            }
         }
 
         device.destroyCommandPool(cmd_pool, nullptr);
@@ -814,21 +823,24 @@ struct Demo {
                                      .setWaitSemaphoreCount(1)
                                      .setPWaitSemaphores(&image_acquired_semaphores[frame_index])
                                      .setCommandBufferCount(1)
-                                     .setPCommandBuffers(&buffers[current_buffer].cmd[ vr::Eye_Left ])
+                                     .setPCommandBuffers(&buffers[current_buffer].cmd[ vr::Eye_Left ][ m_nCurFidelityLevel ])
                                      .setSignalSemaphoreCount(0)
                                      .setPSignalSemaphores(nullptr);
 
         result = graphics_queue.submit(1, &submit_info, vk::Fence());
         VERIFY(result == vk::Result::eSuccess);
 
+        float t = ( ( float ) m_nCurFidelityLevel / ( float ) ( NUM_FIDELITY_LEVELS - 1 ) );
+        float scaleFactor = MIN_FIDELITY_SIZE + t * ( MAX_FIDELITY_SIZE - MIN_FIDELITY_SIZE );
+
         //-----------------------------------------------------------------------------------------
         // OpenVR BEGIN: Submit eyes to compositor, left eye just rendered
         //-----------------------------------------------------------------------------------------
         vr::VRTextureBounds_t textureBounds;
         textureBounds.uMin = 0.0f;
-        textureBounds.uMax = 1.0f;
+        textureBounds.uMax = 1.0f * scaleFactor;
         textureBounds.vMin = 0.0f;
-        textureBounds.vMax = 1.0f;
+        textureBounds.vMax = 1.0f * scaleFactor;
 
         vr::VRVulkanTextureData_t vulkanData;
         vulkanData.m_nImage = ( uint64_t ) ( VkImage )m_eyeRenderTarget.image;
@@ -852,7 +864,7 @@ struct Demo {
                 .setWaitSemaphoreCount(0)
                 .setPWaitSemaphores(nullptr)
                 .setCommandBufferCount(1)
-                .setPCommandBuffers(&buffers[current_buffer].cmd[ vr::Eye_Right ])
+                .setPCommandBuffers(&buffers[current_buffer].cmd[ vr::Eye_Right ][ m_nCurFidelityLevel ])
                 .setSignalSemaphoreCount(1)
                 .setPSignalSemaphores(&draw_complete_semaphores[frame_index]);
         result = graphics_queue.submit(1, &submit_info, vk::Fence());
@@ -908,9 +920,11 @@ struct Demo {
 
         // OpenVR: update pose data
         g_VRInterface.UpdateHMDMatrixPose();
+
+        m_nCurFidelityLevel = ( m_nCurFidelityLevel + 1 ) % NUM_FIDELITY_LEVELS;
     }
 
-    void draw_build_cmd(vk::CommandBuffer commandBuffer, vr::Hmd_Eye nEye ) {
+    void draw_build_cmd(vk::CommandBuffer commandBuffer, vr::Hmd_Eye nEye, uint32_t nFidelityLevel ) {
         auto const commandInfo = vk::CommandBufferBeginInfo().setFlags(vk::CommandBufferUsageFlagBits::eSimultaneousUse);
 
         vk::ClearValue const clearValues[2] = {vk::ClearColorValue(std::array<float, 4>({{0.2f, 0.2f, 0.2f, 0.2f}})),
@@ -939,11 +953,15 @@ struct Demo {
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
         commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, 1, &desc_set[ nEye ], 0, nullptr);
 
+        float t = ( ( float ) nFidelityLevel / ( float ) ( NUM_FIDELITY_LEVELS - 1 ) );
+        float scaleFactor = MIN_FIDELITY_SIZE + t * ( MAX_FIDELITY_SIZE - MIN_FIDELITY_SIZE );
+        float flWidth = scaleFactor * ( float ) m_eyeRenderTarget.tex_width;
+        float flHeight = scaleFactor * ( float ) m_eyeRenderTarget.tex_height;
         auto const viewport =
-            vk::Viewport().setWidth((float)m_eyeRenderTarget.tex_width).setHeight((float)m_eyeRenderTarget.tex_height).setMinDepth((float)0.0f).setMaxDepth((float)1.0f);
+            vk::Viewport().setWidth( flWidth ).setHeight( flHeight ).setMinDepth((float)0.0f).setMaxDepth((float)1.0f);
         commandBuffer.setViewport(0, 1, &viewport);
 
-        vk::Rect2D const scissor(vk::Offset2D(0, 0), vk::Extent2D(m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height));
+        vk::Rect2D const scissor(vk::Offset2D(0, 0), vk::Extent2D((uint32_t)flWidth, (uint32_t)flHeight));
         commandBuffer.setScissor(0, 1, &scissor);
         commandBuffer.draw(12 * 3, 1000, 0, 0 );
         commandBuffer.endRenderPass();
@@ -960,7 +978,7 @@ struct Demo {
             auto const blitRegion =
                 vk::ImageBlit()
                     .setSrcSubresource( subresource )
-                    .setSrcOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( m_eyeRenderTarget.tex_width, m_eyeRenderTarget.tex_height, 1 ) } )
+                    .setSrcOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( flWidth, flHeight, 1 ) } )
                     .setDstSubresource(subresource)
                     .setDstOffsets( { vk::Offset3D( 0, 0, 0 ), vk::Offset3D( width, height, 1 ) } );
             commandBuffer.blitImage( m_eyeRenderTarget.image, vk::ImageLayout::eTransferSrcOptimal, buffers[ current_buffer ].image, vk::ImageLayout::eTransferDstOptimal, { blitRegion }, vk::Filter::eNearest );
@@ -1741,10 +1759,13 @@ struct Demo {
         prepare_render_pass();
         prepare_pipeline();
 
-        for (uint32_t i = 0; i < swapchainImageCount; ++i) {
-            result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd[ vr::Eye_Left ]);
-            result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd[ vr::Eye_Right ]);
-            VERIFY(result == vk::Result::eSuccess);
+        for ( uint32_t nFidelityLevel = 0; nFidelityLevel < NUM_FIDELITY_LEVELS; nFidelityLevel++ )
+        {
+            for (uint32_t i = 0; i < swapchainImageCount; ++i) {
+                result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd[ vr::Eye_Left ][ nFidelityLevel ]);
+                result = device.allocateCommandBuffers(&cmd, &buffers[i].cmd[ vr::Eye_Right ][ nFidelityLevel ]);
+                VERIFY(result == vk::Result::eSuccess);
+            }
         }
 
         if (separate_present_queue) {
@@ -1771,10 +1792,13 @@ struct Demo {
 
         prepare_framebuffers();
 
-        for (uint32_t i = 0; i < swapchainImageCount; ++i) {
-            current_buffer = i;
-            draw_build_cmd(buffers[i].cmd[vr::Eye_Left], vr::Eye_Left);
-            draw_build_cmd(buffers[i].cmd[vr::Eye_Right], vr::Eye_Right);
+        for ( uint32_t nFidelityLevel = 0; nFidelityLevel < NUM_FIDELITY_LEVELS; nFidelityLevel++ )
+        {
+            for (uint32_t i = 0; i < swapchainImageCount; ++i) {
+                current_buffer = i;
+                draw_build_cmd(buffers[i].cmd[vr::Eye_Left][nFidelityLevel], vr::Eye_Left, nFidelityLevel);
+                draw_build_cmd(buffers[i].cmd[vr::Eye_Right][nFidelityLevel], vr::Eye_Right, nFidelityLevel);
+            }
         }
 
         /*
@@ -2513,10 +2537,13 @@ struct Demo {
         device.freeMemory(uniform_data[ vr::Eye_Left ].mem, nullptr);
         device.freeMemory(uniform_data[ vr::Eye_Right ].mem, nullptr);
 
-        for (i = 0; i < swapchainImageCount; i++) {
-            device.destroyImageView(buffers[i].view, nullptr);
-            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[ vr::Eye_Left ]);
-            device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[ vr::Eye_Right ]);
+        for ( uint32_t nFidelityLevel = 0; nFidelityLevel < NUM_FIDELITY_LEVELS; nFidelityLevel++ )
+        {
+            for (i = 0; i < swapchainImageCount; i++) {
+                device.destroyImageView(buffers[i].view, nullptr);
+                device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[ vr::Eye_Left ][ nFidelityLevel ]);
+                device.freeCommandBuffers(cmd_pool, 1, &buffers[i].cmd[ vr::Eye_Right ][ nFidelityLevel ]);
+            }
         }
 
         device.destroyCommandPool(cmd_pool, nullptr);
@@ -3070,6 +3097,8 @@ struct Demo {
 
     uint32_t current_buffer;
     uint32_t queue_family_count;
+
+    uint32_t m_nCurFidelityLevel;
 };
 
 #if _WIN32
