@@ -5,6 +5,12 @@ dist: trusty
 sudo: required
 language: cpp
 
+addons:
+  artifacts: true
+    s3_region: "us-west-1"
+    paths:
+    - build/demos/cube_openvr
+
 matrix:
   # Show final status immediately if a test fails.
   fast_finish: true
