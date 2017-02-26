@@ -9,7 +9,7 @@ addons:
   artifacts:
     s3_region: "us-west-1"
     paths:
-    - build/demos/cube_openvr
+    - dbuild/demos/cube_openvr
 
 matrix:
   # Show final status immediately if a test fails.
